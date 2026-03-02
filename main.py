@@ -100,7 +100,11 @@ def http_get_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: i
     req = urllib.request.Request(url, headers=headers or {})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = resp.read()
-    return data.decode("utf-8", errors="replace")
+
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("latin-1", errors="replace")
 
 def domain_of(url: str) -> str:
     try:
