@@ -7,71 +7,59 @@ import math
 import pathlib
 import secrets
 import sqlite3
-import smtplib
-import ssl
-import socket
 import traceback
-from email.message import EmailMessage
+import socket
+import urllib.request
+import xml.etree.ElementTree as ET
+
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
-import urllib.request
-import xml.etree.ElementTree as ET
 
+import requests
 import stripe  # type: ignore
 
 from fastapi import FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
+# =============================================================================
+# Config
+# =============================================================================
 
-# -----------------------------------------------------------------------------
-# Config (env) - non-Stripe stuff can be read once at startup
-# -----------------------------------------------------------------------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip()
 
 YAHOO_SYMBOL = os.getenv("YAHOO_SYMBOL", "GC=F").strip()  # Gold futures
-CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "900"))  # 15 min
+CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "900"))
 
 RSS_FEEDS_ENV = os.getenv("RSS_FEEDS", "https://www.fxstreet.com/rss/news")
 RSS_FEEDS = [u.strip() for u in RSS_FEEDS_ENV.split(",") if u.strip()]
 
 HISTORY_PATH = os.getenv("HISTORY_PATH", "data/history.jsonl").strip()
 
-# Admin/dev key (alltid gyldig). Bytt når du deployer.
+# Admin/dev key (alltid gyldig). Bytt i Render env.
 ADMIN_API_KEY = os.getenv("PREMIUM_API_KEY", "gullbrief-dev").strip()
 
-# SQLite
 DB_PATH = os.getenv("DB_PATH", "data/app.db").strip()
 
-# Email (SMTP)
-SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-
-# Støtt både gamle og nye env-navn:
-# - Render/Brevo vanlig: SMTP_USERNAME / SMTP_PASSWORD
-# - Eldre: SMTP_USER / SMTP_PASS
-SMTP_USER = (os.getenv("SMTP_USERNAME", "") or os.getenv("SMTP_USER", "")).strip()
-SMTP_PASS = (os.getenv("SMTP_PASSWORD", "") or os.getenv("SMTP_PASS", "")).strip()
-
-SMTP_FROM = os.getenv("SMTP_FROM", "").strip()  # f.eks. "Gullbrief <noreply@dittdomene.no>"
 ALERT_BASE_URL = os.getenv("ALERT_BASE_URL", "http://127.0.0.1:8000").strip()
-# Brevo Transactional API (brukes i stedet for SMTP)
+
+# Brevo Transactional API
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
 SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "").strip()
 SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "Gullbrief").strip()
 
-# Stripe URLs (read dynamically)
+# Stripe default URLs (read dynamically too)
 STRIPE_SUCCESS_URL_DEFAULT = os.getenv("STRIPE_SUCCESS_URL", "http://127.0.0.1:8000/success").strip()
 STRIPE_CANCEL_URL_DEFAULT = os.getenv("STRIPE_CANCEL_URL", "http://127.0.0.1:8000/archive").strip()
 
-
-# -----------------------------------------------------------------------------
+# =============================================================================
 # App + CORS
-# -----------------------------------------------------------------------------
-app = FastAPI(title="Gullbrief Research", version="1.8")
+# =============================================================================
+
+app = FastAPI(title="Gullbrief Research", version="1.9")
 
 origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
@@ -84,12 +72,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# -----------------------------------------------------------------------------
+# =============================================================================
 # Utils
-# -----------------------------------------------------------------------------
+# =============================================================================
+
+
 def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
 
 def safe_float(x: Any) -> Optional[float]:
     try:
@@ -102,21 +92,6 @@ def safe_float(x: Any) -> Optional[float]:
     except Exception:
         return None
 
-def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> Dict[str, Any]:
-    req = urllib.request.Request(url, headers=headers or {})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = resp.read()
-    return json.loads(data.decode("utf-8"))
-
-def http_get_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> str:
-    req = urllib.request.Request(url, headers=headers or {})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = resp.read()
-
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return data.decode("latin-1", errors="replace")
 
 def domain_of(url: str) -> str:
     try:
@@ -125,9 +100,28 @@ def domain_of(url: str) -> str:
         return ""
 
 
-# -----------------------------------------------------------------------------
-# Stripe helpers (IMPORTANT): read env dynamically so you don't fight restarts
-# -----------------------------------------------------------------------------
+def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> Dict[str, Any]:
+    req = urllib.request.Request(url, headers=headers or {})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = resp.read()
+    return json.loads(data.decode("utf-8"))
+
+
+def http_get_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> str:
+    req = urllib.request.Request(url, headers=headers or {})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = resp.read()
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("latin-1", errors="replace")
+
+
+# =============================================================================
+# Stripe helpers (read env dynamically)
+# =============================================================================
+
+
 def stripe_env() -> Dict[str, str]:
     sk = os.getenv("STRIPE_SECRET_KEY", "").strip()
     price = os.getenv("STRIPE_PRICE_ID", "").strip()
@@ -142,9 +136,11 @@ def stripe_env() -> Dict[str, str]:
         "webhook_secret": whsec,
     }
 
+
 def stripe_ready() -> bool:
     e = stripe_env()
     return bool(e["secret_key"] and e["price_id"])
+
 
 def require_stripe() -> Dict[str, str]:
     e = stripe_env()
@@ -154,9 +150,11 @@ def require_stripe() -> Dict[str, str]:
     return e
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # DB (SQLite)
-# -----------------------------------------------------------------------------
+# =============================================================================
+
+
 def _db() -> sqlite3.Connection:
     p = pathlib.Path(DB_PATH)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -164,11 +162,13 @@ def _db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     return conn
 
+
 def init_db() -> None:
     conn = _db()
     cur = conn.cursor()
 
-    cur.execute("""
+    cur.execute(
+        """
       CREATE TABLE IF NOT EXISTS api_keys (
         api_key TEXT PRIMARY KEY,
         email TEXT,
@@ -177,9 +177,11 @@ def init_db() -> None:
         stripe_customer_id TEXT,
         stripe_subscription_id TEXT
       )
-    """)
+    """
+    )
 
-    cur.execute("""
+    cur.execute(
+        """
       CREATE TABLE IF NOT EXISTS email_subscriptions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         api_key TEXT NOT NULL,
@@ -188,22 +190,27 @@ def init_db() -> None:
         last_notified_signal TEXT,
         UNIQUE(api_key, email)
       )
-    """)
+    """
+    )
 
-    cur.execute("""
+    cur.execute(
+        """
       CREATE TABLE IF NOT EXISTS stripe_events (
         event_id TEXT PRIMARY KEY,
         event_type TEXT,
         created_at TEXT NOT NULL
       )
-    """)
+    """
+    )
 
     conn.commit()
     conn.close()
 
+
 @app.on_event("startup")
-def _startup():
+def _startup() -> None:
     init_db()
+
 
 def is_valid_key(k: Optional[str]) -> bool:
     if not k:
@@ -214,6 +221,7 @@ def is_valid_key(k: Optional[str]) -> bool:
     row = conn.execute("SELECT api_key,status FROM api_keys WHERE api_key=?", (k,)).fetchone()
     conn.close()
     return bool(row) and (row["status"] == "active")
+
 
 def _upsert_key_for_stripe(email: str, customer_id: str, subscription_id: str) -> str:
     conn = _db()
@@ -241,17 +249,20 @@ def _upsert_key_for_stripe(email: str, customer_id: str, subscription_id: str) -
     conn.close()
     return api_key
 
+
 def _set_key_status_for_customer(customer_id: str, status: str) -> None:
     conn = _db()
     conn.execute("UPDATE api_keys SET status=? WHERE stripe_customer_id=?", (status, customer_id))
     conn.commit()
     conn.close()
 
+
 def _already_processed(event_id: str) -> bool:
     conn = _db()
     row = conn.execute("SELECT 1 FROM stripe_events WHERE event_id=?", (event_id,)).fetchone()
     conn.close()
     return bool(row)
+
 
 def _mark_processed(event_id: str, event_type: str) -> None:
     conn = _db()
@@ -263,9 +274,11 @@ def _mark_processed(event_id: str, event_type: str) -> None:
     conn.close()
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # Yahoo Finance
-# -----------------------------------------------------------------------------
+# =============================================================================
+
+
 @dataclass
 class YahooPrice:
     symbol: str
@@ -275,10 +288,12 @@ class YahooPrice:
     currency: Optional[str]
     ts: str
 
+
 def fetch_yahoo_chart(symbol: str, range_: str, interval: str) -> Dict[str, Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/1.8)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/1.9)"}
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
     return http_get_json(url, headers=headers)
+
 
 def extract_closes(chart_json: Dict[str, Any]) -> List[float]:
     try:
@@ -287,6 +302,7 @@ def extract_closes(chart_json: Dict[str, Any]) -> List[float]:
         return [float(x) for x in closes if x is not None]
     except Exception:
         return []
+
 
 def fetch_yahoo_price(symbol: str) -> YahooPrice:
     chart = fetch_yahoo_chart(symbol, range_="5d", interval="1d")
@@ -300,19 +316,14 @@ def fetch_yahoo_price(symbol: str) -> YahooPrice:
         currency = chart["chart"]["result"][0]["meta"].get("currency")
     except Exception:
         pass
-    return YahooPrice(
-        symbol=symbol,
-        last=float(last),
-        prev=float(prev),
-        change_pct=float(change_pct) if change_pct is not None else None,
-        currency=currency,
-        ts=iso_now()
-    )
+    return YahooPrice(symbol=symbol, last=float(last), prev=float(prev), change_pct=change_pct, currency=currency, ts=iso_now())
+
 
 def sma(values: List[float], n: int) -> Optional[float]:
     if len(values) < n:
         return None
     return sum(values[-n:]) / n
+
 
 def compute_signal(symbol: str) -> Tuple[str, Dict[str, Any]]:
     chart = fetch_yahoo_chart(symbol, range_="3mo", interval="1d")
@@ -330,9 +341,11 @@ def compute_signal(symbol: str) -> Tuple[str, Dict[str, Any]]:
     return "neutral", {"reason": "Blandet bilde mellom pris og glidende snitt."}
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # RSS headlines
-# -----------------------------------------------------------------------------
+# =============================================================================
+
+
 def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
     items: List[Dict[str, str]] = []
     try:
@@ -353,10 +366,11 @@ def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
             items.append({"title": title, "link": link, "source": channel_title, "published": pub})
     return items
 
+
 def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/1.8)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/1.9)"}
     all_items: List[Dict[str, str]] = []
     for feed_url in RSS_FEEDS:
         try:
@@ -364,6 +378,7 @@ def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
             all_items.extend(parse_rss(xml_text, fallback_source=domain_of(feed_url) or "RSS"))
         except Exception:
             continue
+
     seen, out = set(), []
     for it in all_items:
         lk = it.get("link", "")
@@ -375,9 +390,11 @@ def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
     return out
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # OpenAI summary (optional)
-# -----------------------------------------------------------------------------
+# =============================================================================
+
+
 def summarize_with_openai(headlines: List[Dict[str, str]], signal_state: str, signal_reason: str) -> str:
     if not headlines or not OPENAI_API_KEY:
         return ""
@@ -393,6 +410,7 @@ def summarize_with_openai(headlines: List[Dict[str, str]], signal_state: str, si
     )
     try:
         from openai import OpenAI  # type: ignore
+
         client = OpenAI(api_key=OPENAI_API_KEY)
         resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
         return (resp.output_text or "").strip()
@@ -400,15 +418,19 @@ def summarize_with_openai(headlines: List[Dict[str, str]], signal_state: str, si
         return ""
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # Cache + brief
-# -----------------------------------------------------------------------------
+# =============================================================================
+
+
 @dataclass
 class CacheState:
     ts: float = 0.0
     data: Optional[Dict[str, Any]] = None
 
+
 CACHE = CacheState()
+
 
 def build_brief() -> Dict[str, Any]:
     yp = fetch_yahoo_price(YAHOO_SYMBOL)
@@ -417,8 +439,8 @@ def build_brief() -> Dict[str, Any]:
     headlines = fetch_headlines(limit=10)
 
     macro_ai = summarize_with_openai(headlines, signal_state, signal_reason)
-    macro_summary = macro_ai or (" | ".join([h["title"] for h in headlines[:3] if h.get("title")]) or
-                                 "Ingen nyheter tilgjengelig akkurat nå.")
+    macro_summary = macro_ai or (" | ".join([h["title"] for h in headlines[:3] if h.get("title")]) or "Ingen nyheter tilgjengelig akkurat nå.")
+
     return {
         "updated_at": yp.ts,
         "version": "1.1",
@@ -433,19 +455,48 @@ def build_brief() -> Dict[str, Any]:
     }
 
 
-# -----------------------------------------------------------------------------
-# History (JSONL): signalendring + maks 1 per døgn
-# -----------------------------------------------------------------------------
+def get_cached_brief(force_refresh: bool) -> Dict[str, Any]:
+    now = time.time()
+    if (not force_refresh) and CACHE.data and (now - CACHE.ts) < CACHE_TTL_SECONDS:
+        return CACHE.data
+    data = build_brief()
+    try:
+        store_snapshot_if_needed(data)
+    except Exception:
+        pass
+    CACHE.data = data
+    CACHE.ts = now
+    return data
+
+
+def map_to_public_today(data: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "updated_at": data.get("updated_at") or iso_now(),
+        "version": data.get("version", "1.1"),
+        "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
+        "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
+        "macro": {"summary_short": data.get("macro_summary", "")},
+        "headlines": data.get("headlines", []),
+    }
+
+
+# =============================================================================
+# History (JSONL)
+# =============================================================================
+
+
 def _ensure_history_dir() -> pathlib.Path:
     p = pathlib.Path(HISTORY_PATH)
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
+
 
 def _dt(s: str) -> Optional[datetime]:
     try:
         return datetime.fromisoformat(s.replace("Z", "+00:00"))
     except Exception:
         return None
+
 
 def _read_last_snapshot() -> Optional[Dict[str, Any]]:
     p = _ensure_history_dir()
@@ -467,6 +518,7 @@ def _read_last_snapshot() -> Optional[Dict[str, Any]]:
         return None
     return None
 
+
 def _should_store_snapshot(new_data: Dict[str, Any], last: Optional[Dict[str, Any]]) -> bool:
     if last is None:
         return True
@@ -477,6 +529,7 @@ def _should_store_snapshot(new_data: Dict[str, Any], last: Optional[Dict[str, An
     new_dt = _dt(new_data.get("updated_at", "")) or datetime.now(timezone.utc)
     last_dt = _dt(last.get("updated_at", "")) or datetime.now(timezone.utc)
     return new_dt.date() != last_dt.date()
+
 
 def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
     p = _ensure_history_dir()
@@ -498,6 +551,7 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     return True
 
+
 def read_history(limit: int = 500) -> List[Dict[str, Any]]:
     p = _ensure_history_dir()
     if not p.exists():
@@ -513,6 +567,7 @@ def read_history(limit: int = 500) -> List[Dict[str, Any]]:
             except Exception:
                 continue
     return rows[-limit:]
+
 
 def add_forward_returns(rows: List[Dict[str, Any]], days_list=(7, 30)) -> List[Dict[str, Any]]:
     parsed: List[Tuple[Optional[datetime], Dict[str, Any]]] = [(_dt(r.get("updated_at", "")), r) for r in rows]
@@ -533,43 +588,22 @@ def add_forward_returns(rows: List[Dict[str, Any]], days_list=(7, 30)) -> List[D
     return rows
 
 
-# -----------------------------------------------------------------------------
-# Cached brief getter
-# -----------------------------------------------------------------------------
-def get_cached_brief(force_refresh: bool) -> Dict[str, Any]:
-    now = time.time()
-    if (not force_refresh) and CACHE.data and (now - CACHE.ts) < CACHE_TTL_SECONDS:
-        return CACHE.data
-    data = build_brief()
-    try:
-        store_snapshot_if_needed(data)
-    except Exception:
-        pass
-    CACHE.data = data
-    CACHE.ts = now
-    return data
-
-def map_to_public_today(data: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "1.1"),
-        "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
-        "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
-        "macro": {"summary_short": data.get("macro_summary", "")},
-        "headlines": data.get("headlines", []),
-    }
+def latest_signal() -> str:
+    last = _read_last_snapshot()
+    return (last.get("signal") if last else "") or ""
 
 
-# -----------------------------------------------------------------------------
-# Email alerts (SMTP)
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Email alerts (Brevo)
+# =============================================================================
 
-def smtp_configured() -> bool:
-    # Nå betyr "configured" at Brevo API er satt
+
+def brevo_configured() -> bool:
     return bool(BREVO_API_KEY and SMTP_FROM_EMAIL)
 
+
 def send_email(to_email: str, subject: str, body: str) -> None:
-    if not smtp_configured():
+    if not brevo_configured():
         raise RuntimeError("BREVO_NOT_CONFIGURED (mangler BREVO_API_KEY/SMTP_FROM_EMAIL)")
 
     payload = {
@@ -579,25 +613,26 @@ def send_email(to_email: str, subject: str, body: str) -> None:
         "textContent": body,
     }
 
-import requests
+    r = requests.post(
+        "https://api.brevo.com/v3/smtp/email",
+        headers={
+            "accept": "application/json",
+            "content-type": "application/json",
+            "api-key": BREVO_API_KEY,
+        },
+        json=payload,
+        timeout=20,
+    )
 
-r = requests.post(
-    "https://api.brevo.com/v3/smtp/email",
-    headers={
-        "accept": "application/json",
-        "content-type": "application/json",
-        "api-key": BREVO_API_KEY,
-    },
-    json=payload,
-    timeout=20,
-)
+    if r.status_code >= 400:
+        raise RuntimeError(f"BREVO_HTTP_{r.status_code}: {r.text}")
 
-if r.status_code >= 400:
-    raise RuntimeError(f"BREVO_HTTP_{r.status_code}: {r.text}")
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # Routes
-# -----------------------------------------------------------------------------
+# =============================================================================
+
+
 @app.get("/health")
 def health() -> Dict[str, Any]:
     e = stripe_env()
@@ -615,9 +650,10 @@ def health() -> Dict[str, Any]:
         "stripe_secret_len": len(e["secret_key"]),
         "stripe_price_id_prefix": (e["price_id"][:10] + "...") if e["price_id"] else "",
         "stripe_webhook_secret_set": bool(e["webhook_secret"]),
-        "smtp_enabled": smtp_configured(),
-        "version": "1.8",
+        "brevo_enabled": brevo_configured(),
+        "version": "1.9",
     }
+
 
 @app.get("/api/debug/stripe")
 def debug_stripe() -> Dict[str, Any]:
@@ -631,6 +667,7 @@ def debug_stripe() -> Dict[str, Any]:
         "webhook_secret_set": bool(e["webhook_secret"]),
     }
 
+
 @app.get("/api/brief")
 def api_brief(force_refresh: bool = False):
     try:
@@ -638,12 +675,14 @@ def api_brief(force_refresh: bool = False):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": "BRIEF_FAILED", "message": str(e)})
 
+
 @app.get("/api/brief/refresh")
 def api_brief_refresh():
     try:
         return get_cached_brief(force_refresh=True)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": "BRIEF_REFRESH_FAILED", "message": str(e)})
+
 
 @app.get("/api/public/today")
 def api_public_today():
@@ -653,6 +692,7 @@ def api_public_today():
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": "PUBLIC_TODAY_FAILED", "message": str(e)})
 
+
 @app.get("/api/public/teaser-history")
 def api_teaser_history():
     rows = read_history(limit=50)
@@ -660,36 +700,37 @@ def api_teaser_history():
     items = rows[-3:]
     out = []
     for r in reversed(items):
-        out.append({
-            "updated_at": r.get("updated_at"),
-            "symbol": r.get("symbol"),
-            "price_usd": r.get("price_usd"),
-            "signal": r.get("signal"),
-            "macro_summary": (r.get("macro_summary") or "")[:120],
-            "return_7d_pct": r.get("return_7d_pct"),
-            "return_30d_pct": r.get("return_30d_pct"),
-        })
+        out.append(
+            {
+                "updated_at": r.get("updated_at"),
+                "symbol": r.get("symbol"),
+                "price_usd": r.get("price_usd"),
+                "signal": r.get("signal"),
+                "macro_summary": (r.get("macro_summary") or "")[:120],
+                "return_7d_pct": r.get("return_7d_pct"),
+                "return_30d_pct": r.get("return_30d_pct"),
+            }
+        )
     return {"count": len(out), "items": out}
+
 
 @app.get("/api/history")
 def api_history(limit: int = 200, x_api_key: str | None = Header(default=None)):
     if not is_valid_key(x_api_key):
-        return JSONResponse(
-            status_code=401,
-            content={"error": "PREMIUM_REQUIRED", "message": "Historikk er kun for medlemmer."},
-        )
+        return JSONResponse(status_code=401, content={"error": "PREMIUM_REQUIRED", "message": "Historikk er kun for medlemmer."})
     rows = read_history(limit=limit)
     rows = add_forward_returns(rows, days_list=(7, 30))
     return {"count": len(rows), "items": rows}
 
+
 @app.post("/api/premium/subscribe-email")
 async def api_subscribe_email(req: Request, x_api_key: str | None = Header(default=None)):
     if not is_valid_key(x_api_key):
-        return JSONResponse(status_code=401, content={"error":"PREMIUM_REQUIRED","message":"Premium kreves."})
+        return JSONResponse(status_code=401, content={"error": "PREMIUM_REQUIRED", "message": "Premium kreves."})
     body = await req.json()
     email = (body.get("email") or "").strip().lower()
     if "@" not in email:
-        return JSONResponse(status_code=400, content={"error":"BAD_EMAIL","message":"Ugyldig e-post."})
+        return JSONResponse(status_code=400, content={"error": "BAD_EMAIL", "message": "Ugyldig e-post."})
 
     conn = _db()
     conn.execute(
@@ -700,22 +741,27 @@ async def api_subscribe_email(req: Request, x_api_key: str | None = Header(defau
     conn.close()
     return {"ok": True, "email": email}
 
+
+# --- Admin tasks (manual trigger / cron)
+
+
 @app.get("/api/tasks/check-signal")
 def api_check_signal(admin_key: str = ""):
     if admin_key != ADMIN_API_KEY:
-        return JSONResponse(status_code=401, content={"error":"UNAUTHORIZED","message":"admin_key feil."})
+        return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED", "message": "admin_key feil."})
 
+    # Refresh brief + history snapshot
     try:
         get_cached_brief(force_refresh=True)
     except Exception:
         pass
 
-    sig = latest_signal()
+    sig = latest_signal().lower()
     if not sig:
         return {"ok": True, "sent": 0, "note": "No history yet."}
 
-    if not smtp_configured():
-        return {"ok": False, "sent": 0, "error": "SMTP_NOT_CONFIGURED"}
+    if not brevo_configured():
+        return {"ok": False, "sent": 0, "error": "BREVO_NOT_CONFIGURED"}
 
     conn = _db()
     rows = conn.execute("SELECT id, api_key, email, last_notified_signal FROM email_subscriptions").fetchall()
@@ -729,10 +775,10 @@ def api_check_signal(admin_key: str = ""):
         to_email = row["email"]
         subject = f"Gullbrief: signal endret til {sig.upper()}"
         body = (
-            f"Signalet i Gullbrief har endret seg.\n\n"
+            "Signalet i Gullbrief har endret seg.\n\n"
             f"Nytt signal: {sig.upper()}\n"
             f"Se arkiv: {ALERT_BASE_URL}/archive\n\n"
-            f"(Dette er et automatisk varsel.)\n"
+            "(Dette er et automatisk varsel.)\n"
         )
         try:
             send_email(to_email, subject, body)
@@ -740,29 +786,31 @@ def api_check_signal(admin_key: str = ""):
             conn.commit()
             sent += 1
         except Exception:
+            # Best-effort: ikke stopp hele jobben
             continue
 
     conn.close()
     return {"ok": True, "sent": sent, "signal": sig}
 
+
 @app.post("/api/tasks/send-test-email")
 async def api_send_test_email(req: Request, admin_key: str = ""):
     try:
         if admin_key != ADMIN_API_KEY:
-            return JSONResponse(status_code=401, content={"error":"UNAUTHORIZED","message":"admin_key feil."})
+            return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED", "message": "admin_key feil."})
 
-        if not smtp_configured():
-            return JSONResponse(status_code=500, content={"error":"SMTP_NOT_CONFIGURED"})
+        if not brevo_configured():
+            return JSONResponse(status_code=500, content={"error": "BREVO_NOT_CONFIGURED"})
 
         body = await req.json()
         email = (body.get("email") or "").strip().lower()
         if "@" not in email:
-            return JSONResponse(status_code=400, content={"error":"BAD_EMAIL","message":"Ugyldig e-post."})
+            return JSONResponse(status_code=400, content={"error": "BAD_EMAIL", "message": "Ugyldig e-post."})
 
         subject = "Gullbrief test ✅"
         msg = (
             "Dette er en testmail fra Gullbrief.\n\n"
-            "Hvis du leser dette i innboksen (ikke spam), er SMTP + avsenderoppsett i orden.\n"
+            "Hvis du leser dette i innboksen (ikke spam), er Brevo-oppsettet i orden.\n"
         )
 
         send_email(email, subject, msg)
@@ -770,26 +818,26 @@ async def api_send_test_email(req: Request, admin_key: str = ""):
 
     except Exception as e:
         print("SEND_TEST_EMAIL_FAILED:\n" + traceback.format_exc())
-        return JSONResponse(status_code=500, content={"error":"SEND_FAILED","message": str(e)})
+        return JSONResponse(status_code=500, content={"error": "SEND_FAILED", "message": str(e)})
 
-@app.get("/api/tasks/smtp-ping")
-def smtp_ping(admin_key: str = ""):
+
+@app.get("/api/tasks/tcp-ping")
+def tcp_ping(host: str = "", port: int = 443, admin_key: str = ""):
+    # Tiny debugging helper (optional)
     if admin_key != ADMIN_API_KEY:
-        return JSONResponse(status_code=401, content={"error":"UNAUTHORIZED","message":"admin_key feil."})
-
-    host = SMTP_HOST
-    port = SMTP_PORT
-
+        return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED", "message": "admin_key feil."})
+    if not host:
+        return JSONResponse(status_code=400, content={"error": "MISSING_HOST", "message": "host mangler."})
     try:
-        with socket.create_connection((host, port), timeout=10):
-            return {"ok": True, "host": host, "port": port}
+        with socket.create_connection((host, int(port)), timeout=8):
+            return {"ok": True, "host": host, "port": int(port)}
     except Exception as e:
-        return JSONResponse(status_code=500, content={"ok": False, "host": host, "port": port, "error": str(e)})
+        return JSONResponse(status_code=500, content={"ok": False, "host": host, "port": int(port), "error": str(e)})
 
 
-# -----------------------------------------------------------------------------
-# Stripe: opprett checkout-session
-# -----------------------------------------------------------------------------
+# --- Stripe: opprett checkout-session
+
+
 @app.post("/api/stripe/create-checkout")
 async def api_stripe_create_checkout(req: Request):
     try:
@@ -817,17 +865,17 @@ async def api_stripe_create_checkout(req: Request):
         return JSONResponse(status_code=400, content={"error": "STRIPE_CREATE_CHECKOUT_FAILED", "message": str(ex)})
 
 
-# -----------------------------------------------------------------------------
-# Success-side
-# -----------------------------------------------------------------------------
+# --- Success-side page
+
+
 @app.get("/success", response_class=HTMLResponse)
 def success_page(session_id: str = ""):
     return HTMLResponse(SUCCESS_HTML.replace("__SESSION_ID__", session_id or ""))
 
 
-# -----------------------------------------------------------------------------
-# Claim key (polling)
-# -----------------------------------------------------------------------------
+# --- Claim key (polling)
+
+
 @app.get("/api/stripe/claim-key")
 def api_stripe_claim_key(session_id: str = ""):
     try:
@@ -841,7 +889,7 @@ def api_stripe_claim_key(session_id: str = ""):
     try:
         session = stripe.checkout.Session.retrieve(session_id)
         if session.get("status") != "complete":
-            return JSONResponse(status_code=409, content={"error":"NOT_COMPLETE","message":"Checkout ikke complete."})
+            return JSONResponse(status_code=409, content={"error": "NOT_COMPLETE", "message": "Checkout ikke complete."})
 
         customer = str(session.get("customer") or "")
         subscription = str(session.get("subscription") or "")
@@ -849,7 +897,7 @@ def api_stripe_claim_key(session_id: str = ""):
         email = (email or "").strip().lower()
 
         if not customer or not subscription:
-            return JSONResponse(status_code=400, content={"error":"MISSING_STRIPE_IDS","message":"Mangler customer/subscription i session."})
+            return JSONResponse(status_code=400, content={"error": "MISSING_STRIPE_IDS", "message": "Mangler customer/subscription i session."})
 
         api_key = _upsert_key_for_stripe(email=email, customer_id=customer, subscription_id=subscription)
 
@@ -858,19 +906,19 @@ def api_stripe_claim_key(session_id: str = ""):
         conn.close()
 
         if not row or row["status"] != "active":
-            return JSONResponse(status_code=409, content={"error":"NOT_ACTIVE","message":"Abonnementet er ikke aktivert (venter på betaling/webhook)."})
+            return JSONResponse(status_code=409, content={"error": "NOT_ACTIVE", "message": "Abonnementet er ikke aktivert (venter på betaling/webhook)."})
 
         return {"api_key": row["api_key"], "email": email}
     except Exception as ex:
-        return JSONResponse(status_code=400, content={"error":"STRIPE_CLAIM_FAILED","message":str(ex)})
+        return JSONResponse(status_code=400, content={"error": "STRIPE_CLAIM_FAILED", "message": str(ex)})
 
 
-# -----------------------------------------------------------------------------
-# Stripe webhook (source of truth)
-# -----------------------------------------------------------------------------
+# --- Stripe webhook (source of truth)
+
+
 @app.post("/api/stripe/webhook")
 async def stripe_webhook(request: Request):
-    payload = await request.body()
+    body_bytes = await request.body()
     sig_header = request.headers.get("Stripe-Signature")
     e = stripe_env()
 
@@ -878,7 +926,7 @@ async def stripe_webhook(request: Request):
         return JSONResponse(status_code=500, content={"error": "Missing STRIPE_WEBHOOK_SECRET"})
 
     try:
-        event = stripe.Webhook.construct_event(payload, sig_header, e["webhook_secret"])
+        event = stripe.Webhook.construct_event(body_bytes, sig_header, e["webhook_secret"])
     except stripe.error.SignatureVerificationError:
         return JSONResponse(status_code=400, content={"error": "Invalid signature"})
     except Exception as ex:
@@ -942,21 +990,25 @@ async def stripe_webhook(request: Request):
     return JSONResponse(status_code=200, content={"status": "ok", "type": event_type})
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # Pages (UI)
-# -----------------------------------------------------------------------------
+# =============================================================================
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
     return HTMLResponse(INDEX_HTML)
+
 
 @app.get("/archive", response_class=HTMLResponse)
 def archive() -> HTMLResponse:
     return HTMLResponse(ARCHIVE_HTML)
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # HTML templates
-# -----------------------------------------------------------------------------
+# =============================================================================
+
 INDEX_HTML = """<!doctype html>
 <html lang="no">
 <head>
