@@ -58,6 +58,10 @@ SMTP_PASS = (os.getenv("SMTP_PASSWORD", "") or os.getenv("SMTP_PASS", "")).strip
 
 SMTP_FROM = os.getenv("SMTP_FROM", "").strip()  # f.eks. "Gullbrief <noreply@dittdomene.no>"
 ALERT_BASE_URL = os.getenv("ALERT_BASE_URL", "http://127.0.0.1:8000").strip()
+# Brevo Transactional API (brukes i stedet for SMTP)
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "").strip()
+SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "Gullbrief").strip()
 
 # Stripe URLs (read dynamically)
 STRIPE_SUCCESS_URL_DEFAULT = os.getenv("STRIPE_SUCCESS_URL", "http://127.0.0.1:8000/success").strip()
@@ -559,35 +563,37 @@ def map_to_public_today(data: Dict[str, Any]) -> Dict[str, Any]:
 # -----------------------------------------------------------------------------
 # Email alerts (SMTP)
 # -----------------------------------------------------------------------------
+
 def smtp_configured() -> bool:
-    # Brevo krever auth. Uten user/pass vil det ofte henge/feile.
-    return bool(SMTP_HOST and SMTP_FROM and SMTP_USER and SMTP_PASS)
+    # Nå betyr "configured" at Brevo API er satt
+    return bool(BREVO_API_KEY and SMTP_FROM_EMAIL)
 
 def send_email(to_email: str, subject: str, body: str) -> None:
     if not smtp_configured():
-        raise RuntimeError("SMTP_NOT_CONFIGURED (mangler SMTP_HOST/SMTP_FROM/SMTP_USERNAME/SMTP_PASSWORD)")
+        raise RuntimeError("BREVO_NOT_CONFIGURED (mangler BREVO_API_KEY/SMTP_FROM_EMAIL)")
 
-    msg = EmailMessage()
-    msg["From"] = SMTP_FROM
-    msg["To"] = to_email
-    msg["Subject"] = subject
-    msg.set_content(body)
+    payload = {
+        "sender": {"name": SMTP_FROM_NAME, "email": SMTP_FROM_EMAIL},
+        "to": [{"email": to_email}],
+        "subject": subject,
+        "textContent": body,
+    }
 
-    ctx = ssl.create_default_context()
+import requests
 
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=25) as server:
-        server.ehlo()
-        server.starttls(context=ctx)
-        server.ehlo()
-        server.login(SMTP_USER, SMTP_PASS)
-        server.send_message(msg)
+r = requests.post(
+    "https://api.brevo.com/v3/smtp/email",
+    headers={
+        "accept": "application/json",
+        "content-type": "application/json",
+        "api-key": BREVO_API_KEY,
+    },
+    json=payload,
+    timeout=20,
+)
 
-def latest_signal() -> Optional[str]:
-    rows = read_history(limit=3)
-    if not rows:
-        return None
-    return (rows[-1].get("signal") or "").lower()
-
+if r.status_code >= 400:
+    raise RuntimeError(f"BREVO_HTTP_{r.status_code}: {r.text}")
 
 # -----------------------------------------------------------------------------
 # Routes
