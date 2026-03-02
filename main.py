@@ -609,9 +609,9 @@ def debug_stripe() -> Dict[str, Any]:
     }
 
 @app.get("/api/brief")
-def api_brief():
+def api_brief(force_refresh: bool = False):
     try:
-        return get_cached_brief(force_refresh=False)
+        return get_cached_brief(force_refresh=force_refresh)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": "BRIEF_FAILED", "message": str(e)})
 
