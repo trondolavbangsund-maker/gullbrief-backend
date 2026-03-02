@@ -8,6 +8,9 @@ import pathlib
 import secrets
 import sqlite3
 import smtplib
+import ssl
+import socket
+import traceback
 from email.message import EmailMessage
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
@@ -46,8 +49,13 @@ DB_PATH = os.getenv("DB_PATH", "data/app.db").strip()
 # Email (SMTP)
 SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "").strip()
-SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
+
+# Støtt både gamle og nye env-navn:
+# - Render/Brevo vanlig: SMTP_USERNAME / SMTP_PASSWORD
+# - Eldre: SMTP_USER / SMTP_PASS
+SMTP_USER = (os.getenv("SMTP_USERNAME", "") or os.getenv("SMTP_USER", "")).strip()
+SMTP_PASS = (os.getenv("SMTP_PASSWORD", "") or os.getenv("SMTP_PASS", "")).strip()
+
 SMTP_FROM = os.getenv("SMTP_FROM", "").strip()  # f.eks. "Gullbrief <noreply@dittdomene.no>"
 ALERT_BASE_URL = os.getenv("ALERT_BASE_URL", "http://127.0.0.1:8000").strip()
 
@@ -552,21 +560,26 @@ def map_to_public_today(data: Dict[str, Any]) -> Dict[str, Any]:
 # Email alerts (SMTP)
 # -----------------------------------------------------------------------------
 def smtp_configured() -> bool:
-    return bool(SMTP_HOST and SMTP_FROM)
+    # Brevo krever auth. Uten user/pass vil det ofte henge/feile.
+    return bool(SMTP_HOST and SMTP_FROM and SMTP_USER and SMTP_PASS)
 
 def send_email(to_email: str, subject: str, body: str) -> None:
     if not smtp_configured():
-        raise RuntimeError("SMTP not configured")
+        raise RuntimeError("SMTP_NOT_CONFIGURED (mangler SMTP_HOST/SMTP_FROM/SMTP_USERNAME/SMTP_PASSWORD)")
+
     msg = EmailMessage()
     msg["From"] = SMTP_FROM
     msg["To"] = to_email
     msg["Subject"] = subject
     msg.set_content(body)
 
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
-        server.starttls()
-        if SMTP_USER and SMTP_PASS:
-            server.login(SMTP_USER, SMTP_PASS)
+    ctx = ssl.create_default_context()
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=25) as server:
+        server.ehlo()
+        server.starttls(context=ctx)
+        server.ehlo()
+        server.login(SMTP_USER, SMTP_PASS)
         server.send_message(msg)
 
 def latest_signal() -> Optional[str]:
@@ -723,31 +736,49 @@ def api_check_signal(admin_key: str = ""):
         except Exception:
             continue
 
-        conn.close()
+    conn.close()
     return {"ok": True, "sent": sent, "signal": sig}
-
 
 @app.post("/api/tasks/send-test-email")
 async def api_send_test_email(req: Request, admin_key: str = ""):
+    try:
+        if admin_key != ADMIN_API_KEY:
+            return JSONResponse(status_code=401, content={"error":"UNAUTHORIZED","message":"admin_key feil."})
+
+        if not smtp_configured():
+            return JSONResponse(status_code=500, content={"error":"SMTP_NOT_CONFIGURED"})
+
+        body = await req.json()
+        email = (body.get("email") or "").strip().lower()
+        if "@" not in email:
+            return JSONResponse(status_code=400, content={"error":"BAD_EMAIL","message":"Ugyldig e-post."})
+
+        subject = "Gullbrief test ✅"
+        msg = (
+            "Dette er en testmail fra Gullbrief.\n\n"
+            "Hvis du leser dette i innboksen (ikke spam), er SMTP + avsenderoppsett i orden.\n"
+        )
+
+        send_email(email, subject, msg)
+        return {"ok": True, "email": email}
+
+    except Exception as e:
+        print("SEND_TEST_EMAIL_FAILED:\n" + traceback.format_exc())
+        return JSONResponse(status_code=500, content={"error":"SEND_FAILED","message": str(e)})
+
+@app.get("/api/tasks/smtp-ping")
+def smtp_ping(admin_key: str = ""):
     if admin_key != ADMIN_API_KEY:
         return JSONResponse(status_code=401, content={"error":"UNAUTHORIZED","message":"admin_key feil."})
 
-    if not smtp_configured():
-        return JSONResponse(status_code=500, content={"error":"SMTP_NOT_CONFIGURED"})
-
-    body = await req.json()
-    email = (body.get("email") or "").strip().lower()
-    if "@" not in email:
-        return JSONResponse(status_code=400, content={"error":"BAD_EMAIL","message":"Ugyldig e-post."})
-
-    subject = "Gullbrief test ✅"
-    msg = "Dette er en testmail fra Gullbrief."
+    host = SMTP_HOST
+    port = SMTP_PORT
 
     try:
-        send_email(email, subject, msg)
-        return {"ok": True, "email": email}
+        with socket.create_connection((host, port), timeout=10):
+            return {"ok": True, "host": host, "port": port}
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error":"SEND_FAILED","message": str(e)})
+        return JSONResponse(status_code=500, content={"ok": False, "host": host, "port": port, "error": str(e)})
 
 
 # -----------------------------------------------------------------------------
@@ -867,7 +898,6 @@ async def stripe_webhook(request: Request):
             if customer and subscription:
                 _upsert_key_for_stripe(email=email, customer_id=customer, subscription_id=subscription)
 
-                # Smooth: activate immediately if Stripe says it's paid
                 payment_status = (obj.get("payment_status") or "").strip().lower()
                 if payment_status == "paid":
                     _set_key_status_for_customer(customer, "active")
@@ -876,7 +906,6 @@ async def stripe_webhook(request: Request):
             customer = str(obj.get("customer") or "")
             subscription = str(obj.get("subscription") or "")
             if customer:
-                # ensure key exists, then activate
                 conn = _db()
                 row = conn.execute("SELECT email FROM api_keys WHERE stripe_customer_id=?", (customer,)).fetchone()
                 conn.close()
