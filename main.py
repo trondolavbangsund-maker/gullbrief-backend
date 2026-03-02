@@ -723,8 +723,31 @@ def api_check_signal(admin_key: str = ""):
         except Exception:
             continue
 
-    conn.close()
+        conn.close()
     return {"ok": True, "sent": sent, "signal": sig}
+
+
+@app.post("/api/tasks/send-test-email")
+async def api_send_test_email(req: Request, admin_key: str = ""):
+    if admin_key != ADMIN_API_KEY:
+        return JSONResponse(status_code=401, content={"error":"UNAUTHORIZED","message":"admin_key feil."})
+
+    if not smtp_configured():
+        return JSONResponse(status_code=500, content={"error":"SMTP_NOT_CONFIGURED"})
+
+    body = await req.json()
+    email = (body.get("email") or "").strip().lower()
+    if "@" not in email:
+        return JSONResponse(status_code=400, content={"error":"BAD_EMAIL","message":"Ugyldig e-post."})
+
+    subject = "Gullbrief test ✅"
+    msg = "Dette er en testmail fra Gullbrief."
+
+    try:
+        send_email(email, subject, msg)
+        return {"ok": True, "email": email}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error":"SEND_FAILED","message": str(e)})
 
 
 # -----------------------------------------------------------------------------
