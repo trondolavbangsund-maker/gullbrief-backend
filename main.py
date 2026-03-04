@@ -13,7 +13,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -22,8 +22,17 @@ import stripe  # type: ignore
 
 from fastapi import FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    Response,
+    RedirectResponse,
+)
 
+# =============================================================================
+# Gullbrief main.py (SEO + Premium + Stripe safe) – v3.1
+# =============================================================================
 
 # =============================================================================
 # Config
@@ -47,36 +56,44 @@ ADMIN_API_KEY = os.getenv("PREMIUM_API_KEY", "gullbrief-dev").strip()
 
 DB_PATH = os.getenv("DB_PATH", "data/app.db").strip()
 
-# Base URL (for canonical/sitemap). Hvis tom -> vi detekterer fra request headers
+# Base URL for canonical/sitemap. If empty -> detect from request headers (Render proxy friendly)
 BASE_URL = os.getenv("BASE_URL", "").strip().rstrip("/")
 
 # Brevo Transactional API
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
 SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "").strip()
-SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "Gullbrief").strip()
+SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", APP_NAME).strip()
 
 # Stripe defaults (read dynamically too)
 STRIPE_SUCCESS_URL_DEFAULT = os.getenv("STRIPE_SUCCESS_URL", "").strip()
 STRIPE_CANCEL_URL_DEFAULT = os.getenv("STRIPE_CANCEL_URL", "").strip()
 
 # Google Search Console verification
-# Kan settes som enten:
+# Can be set as:
 #  - "google-site-verification=XXXXX"
-#  - eller bare "XXXXX"
-GOOGLE_SITE_VERIFICATION = os.getenv(
-    "GOOGLE_SITE_VERIFICATION",
-    "google-site-verification=W5dv0qhSwRLBDZH6YcVwJtqybjReTSmbjggqvhTJvVI",
-).strip()
+#  - or just "XXXXX"
+GOOGLE_SITE_VERIFICATION = os.getenv("GOOGLE_SITE_VERIFICATION", "").strip()
+if not GOOGLE_SITE_VERIFICATION:
+    # keep backwards safe default if you had it baked earlier
+    GOOGLE_SITE_VERIFICATION = "google-site-verification=W5dv0qhSwRLBDZH6YcVwJtqybjReTSmbjggqvhTJvVI"
+
 if GOOGLE_SITE_VERIFICATION.startswith("google-site-verification="):
     GOOGLE_SITE_VERIFICATION_CONTENT = GOOGLE_SITE_VERIFICATION.split("=", 1)[1].strip()
 else:
     GOOGLE_SITE_VERIFICATION_CONTENT = GOOGLE_SITE_VERIFICATION
 
+# Optional: Twitter handle for meta
+TWITTER_SITE = os.getenv("TWITTER_SITE", "").strip()  # e.g. "@gullbrief"
+
+# SEO knobs
+SITEMAP_ARCHIVE_DAYS = int(os.getenv("SITEMAP_ARCHIVE_DAYS", "45"))  # include last N days in sitemap
+FEED_ITEMS = int(os.getenv("FEED_ITEMS", "20"))  # RSS items
+
 # =============================================================================
 # App + CORS
 # =============================================================================
 
-app = FastAPI(title=f"{APP_NAME} Research", version="3.0")
+app = FastAPI(title=f"{APP_NAME} Backend", version="3.1", docs_url=None, redoc_url=None)
 
 origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
@@ -88,6 +105,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Optional: proxy headers (Render) – safe to ignore if unavailable
+try:
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware  # type: ignore
+
+    app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+except Exception:
+    pass
 
 
 # =============================================================================
@@ -136,6 +161,34 @@ def get_base_url(request: Request) -> str:
     host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
     return f"{proto}://{host}".rstrip("/")
 
+def _dt(s: str) -> Optional[datetime]:
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+def _date_yyyy_mm_dd(dt_iso: str) -> Optional[str]:
+    t = _dt(dt_iso)
+    if not t:
+        return None
+    return t.date().isoformat()
+
+def _escape_html(s: str) -> str:
+    return (
+        (s or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+def _replace_many(template: str, mapping: Dict[str, str]) -> str:
+    out = template
+    for k, v in mapping.items():
+        out = out.replace(k, v)
+    return out
+
 
 # =============================================================================
 # Stripe helpers (read env dynamically)
@@ -165,7 +218,7 @@ def require_stripe(request: Optional[Request] = None) -> Dict[str, str]:
         raise RuntimeError("STRIPE_NOT_CONFIGURED: Sett STRIPE_SECRET_KEY og STRIPE_PRICE_ID")
     stripe.api_key = e["secret_key"]
 
-    # Hvis success/cancel ikke satt, bruk base_url fra request
+    # If success/cancel not set, derive from base_url
     if request:
         base = get_base_url(request)
         if not e["success_url"]:
@@ -301,7 +354,7 @@ class YahooPrice:
     ts: str
 
 def fetch_yahoo_chart(symbol: str, range_: str, interval: str) -> Dict[str, Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.0)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.1)"}
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
     return http_get_json(url, headers=headers)
 
@@ -325,7 +378,14 @@ def fetch_yahoo_price(symbol: str) -> YahooPrice:
         currency = chart["chart"]["result"][0]["meta"].get("currency")
     except Exception:
         pass
-    return YahooPrice(symbol=symbol, last=float(last), prev=float(prev), change_pct=change_pct, currency=currency, ts=iso_now())
+    return YahooPrice(
+        symbol=symbol,
+        last=float(last),
+        prev=float(prev),
+        change_pct=change_pct,
+        currency=currency,
+        ts=iso_now(),
+    )
 
 def sma(values: List[float], n: int) -> Optional[float]:
     if len(values) < n:
@@ -362,21 +422,25 @@ def compute_signal(symbol: str) -> Tuple[str, Dict[str, Any]]:
     chart = fetch_yahoo_chart(symbol, range_="3mo", interval="1d")
     closes = extract_closes(chart)
     if len(closes) < 55:
-        return "neutral", {"reason": "For lite historikk til SMA20/SMA50. Setter nøytral.", "rsi14": None, "trend_score": None}
+        return "neutral", {
+            "reason": "For lite historikk til SMA20/SMA50. Setter nøytral.",
+            "rsi14": None,
+            "trend_score": None,
+        }
 
     last = closes[-1]
     s20, s50 = sma(closes, 20), sma(closes, 50)
-    rsi14 = rsi(closes, 14)
+    rsi14v = rsi(closes, 14)
     tscore = trend_score_from_mas(last, s20, s50)
 
     if s20 is None or s50 is None:
-        return "neutral", {"reason": "Kunne ikke beregne glidende snitt.", "rsi14": rsi14, "trend_score": tscore}
+        return "neutral", {"reason": "Kunne ikke beregne glidende snitt.", "rsi14": rsi14v, "trend_score": tscore}
 
     if last > s20 > s50:
-        return "bullish", {"reason": "Pris over SMA20 og SMA50, med positiv trend.", "rsi14": rsi14, "trend_score": tscore}
+        return "bullish", {"reason": "Pris over SMA20 og SMA50, med positiv trend.", "rsi14": rsi14v, "trend_score": tscore}
     if last < s20 < s50:
-        return "bearish", {"reason": "Pris under SMA20 og SMA50, med negativ trend.", "rsi14": rsi14, "trend_score": tscore}
-    return "neutral", {"reason": "Blandet bilde mellom pris og glidende snitt.", "rsi14": rsi14, "trend_score": tscore}
+        return "bearish", {"reason": "Pris under SMA20 og SMA50, med negativ trend.", "rsi14": rsi14v, "trend_score": tscore}
+    return "neutral", {"reason": "Blandet bilde mellom pris og glidende snitt.", "rsi14": rsi14v, "trend_score": tscore}
 
 
 # =============================================================================
@@ -406,7 +470,7 @@ def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
 def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.0)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.1)"}
     all_items: List[Dict[str, str]] = []
     for feed_url in RSS_FEEDS:
         try:
@@ -445,6 +509,7 @@ def summarize_with_openai(headlines: List[Dict[str, str]], signal_state: str, si
     )
     try:
         from openai import OpenAI  # type: ignore
+
         client = OpenAI(api_key=OPENAI_API_KEY)
         resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
         return (resp.output_text or "").strip()
@@ -464,6 +529,7 @@ def premium_report_ai(
     if not titles:
         titles = ["(Ingen nyhetsoverskrifter tilgjengelig)"]
 
+    # Fallback if no OpenAI key
     if not OPENAI_API_KEY:
         bits = []
         if isinstance(price_usd, (int, float)):
@@ -476,7 +542,7 @@ def premium_report_ai(
             bits.append(f"Trend score: {trend_score}/100")
         header = " | ".join(bits) if bits else "Dagens nøkkeltall: (ukjent)"
         return (
-            f"Gullbrief Premium ({datetime.now(timezone.utc).date().isoformat()})\n"
+            f"{APP_NAME} Premium ({datetime.now(timezone.utc).date().isoformat()})\n"
             f"{header}\n"
             f"Signal: {signal_state.upper()} ({signal_reason})\n\n"
             "Nyhetsdriver (utdrag):\n- " + "\n- ".join(titles[:6]) + "\n\n"
@@ -492,7 +558,7 @@ def premium_report_ai(
     ts_line = f"Trend score: {trend_score}/100" if isinstance(trend_score, int) else "Trend score: (ukjent)"
 
     prompt = (
-        "Du er Gullbrief Premium. Skriv en daglig makrokommentar om gull (GC=F) på norsk.\n"
+        f"Du er {APP_NAME} Premium. Skriv en daglig makrokommentar om gull (GC=F) på norsk.\n"
         "Krav:\n"
         "- 10–16 linjer, korte avsnitt, svært nøkternt.\n"
         "- Fokus på makro: renter, USD, inflasjon, vekst, geopolitikk, posisjonering.\n"
@@ -512,6 +578,7 @@ def premium_report_ai(
 
     try:
         from openai import OpenAI  # type: ignore
+
         client = OpenAI(api_key=OPENAI_API_KEY)
         resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
         return (resp.output_text or "").strip()
@@ -552,7 +619,7 @@ def build_brief() -> Dict[str, Any]:
 
     return {
         "updated_at": yp.ts,
-        "version": "3.0",
+        "version": "3.1",
         "symbol": yp.symbol,
         "currency": yp.currency,
         "price_usd": yp.last,
@@ -581,7 +648,7 @@ def get_cached_brief(force_refresh: bool) -> Dict[str, Any]:
 def map_to_public_today(data: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.0"),
+        "version": data.get("version", "3.1"),
         "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
         "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
         "macro": {"summary_short": data.get("macro_summary", "")},
@@ -598,12 +665,6 @@ def _ensure_history_dir() -> pathlib.Path:
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
 
-def _dt(s: str) -> Optional[datetime]:
-    try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
-    except Exception:
-        return None
-
 def _read_last_snapshot() -> Optional[Dict[str, Any]]:
     p = _ensure_history_dir()
     if not p.exists():
@@ -614,7 +675,7 @@ def _read_last_snapshot() -> Optional[Dict[str, Any]]:
             size = f.tell()
             if size == 0:
                 return None
-            f.seek(max(0, size - 8192), 0)
+            f.seek(max(0, size - 16384), 0)
             tail = f.read().decode("utf-8", errors="replace").splitlines()
             for line in reversed(tail):
                 line = line.strip()
@@ -653,7 +714,7 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
 
     rec = {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.0"),
+        "version": data.get("version", "3.1"),
         "symbol": data.get("symbol"),
         "price_usd": data.get("price_usd"),
         "change_pct": data.get("change_pct"),
@@ -687,7 +748,6 @@ def read_history(limit: int = 500) -> List[Dict[str, Any]]:
     return rows[-limit:]
 
 def add_forward_returns(rows: List[Dict[str, Any]], days_list=(7, 30)) -> List[Dict[str, Any]]:
-    # rows is oldest->newest (as stored). We compute forward returns from each row to the first >= target date
     parsed: List[Tuple[Optional[datetime], Dict[str, Any]]] = [(_dt(r.get("updated_at", "")), r) for r in rows]
     for t, r in parsed:
         p0 = safe_float(r.get("price_usd"))
@@ -706,7 +766,6 @@ def add_forward_returns(rows: List[Dict[str, Any]], days_list=(7, 30)) -> List[D
     return rows
 
 def signal_stats_last30(rows_newest_first: List[Dict[str, Any]]) -> Dict[str, Any]:
-    # expects newest->oldest items with return_7d_pct computed
     sig_rows = []
     for r in rows_newest_first:
         s = (r.get("signal") or "").lower()
@@ -751,6 +810,54 @@ def signal_stats_last30(rows_newest_first: List[Dict[str, Any]]) -> Dict[str, An
 def latest_signal() -> str:
     last = _read_last_snapshot()
     return (last.get("signal") if last else "") or ""
+
+def get_archive_dates(last_n_days: int = 45) -> List[str]:
+    """
+    Returns unique YYYY-MM-DD dates found in history (newest first), limited by last_n_days window.
+    """
+    rows = read_history(limit=1200)
+    dates: List[str] = []
+    seen = set()
+    today_utc = datetime.now(timezone.utc).date()
+    cutoff = today_utc - timedelta(days=max(0, last_n_days - 1))
+
+    for r in reversed(rows):  # newest -> oldest
+        d = _date_yyyy_mm_dd(str(r.get("updated_at") or ""))
+        if not d:
+            continue
+        try:
+            dd = date.fromisoformat(d)
+        except Exception:
+            continue
+        if dd < cutoff:
+            break
+        if d not in seen:
+            seen.add(d)
+            dates.append(d)
+
+    return dates  # newest first
+
+def load_snapshot_for_date(day: str) -> Optional[Dict[str, Any]]:
+    """
+    Finds the latest snapshot matching YYYY-MM-DD in JSONL.
+    """
+    p = _ensure_history_dir()
+    if not p.exists():
+        return None
+    best: Optional[Dict[str, Any]] = None
+    with p.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            d = _date_yyyy_mm_dd(str(r.get("updated_at") or ""))
+            if d == day:
+                best = r
+    return best
 
 
 # =============================================================================
@@ -803,10 +910,10 @@ def jsonld_website(base: str) -> str:
             "query-input": "required name=search_term_string",
         },
     }
-    return f'<script type="application/ld+json">{json.dumps(data, ensure_ascii=False)}</script>'
+    return '<script type="application/ld+json">' + json.dumps(data, ensure_ascii=False) + "</script>"
 
-def jsonld_article(base: str, title: str, description: str, url_path: str) -> str:
-    data = {
+def jsonld_article(base: str, title: str, description: str, url_path: str, date_published: Optional[str] = None) -> str:
+    data: Dict[str, Any] = {
         "@context": "https://schema.org",
         "@type": "Article",
         "headline": title,
@@ -816,7 +923,52 @@ def jsonld_article(base: str, title: str, description: str, url_path: str) -> st
         "publisher": {"@type": "Organization", "name": APP_NAME},
         "dateModified": iso_now(),
     }
-    return f'<script type="application/ld+json">{json.dumps(data, ensure_ascii=False)}</script>'
+    if date_published:
+        data["datePublished"] = date_published
+    return '<script type="application/ld+json">' + json.dumps(data, ensure_ascii=False) + "</script>"
+
+COMMON_STYLE = """
+<style>
+  :root{--bg:#0f1720;--card:#16212c;--text:#e5e7eb;--muted:#9aa3af;--gold:#d4af37;--ok:#34d399;--err:#fb7185;--max:1060px;--r:16px;}
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 800px at 20% 10%,#142234 0%,var(--bg) 55%) no-repeat;color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;line-height:1.45;}
+  a{color:var(--text);text-decoration:none} a:hover{text-decoration:underline}
+  .wrap{max-width:var(--max);margin:0 auto;padding:28px 18px 64px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:8px 0 18px}
+  .brand{font-weight:850;letter-spacing:.2px}
+  .nav{display:flex;gap:12px;align-items:center;color:var(--muted);font-size:14px;flex-wrap:wrap}
+  .nav a{color:var(--muted)}
+  .cta{background:var(--gold);color:#0b0f14;padding:10px 14px;border-radius:999px;font-weight:800}
+  .hero{padding:20px 0 6px}
+  .hero h1{margin:10px 0 8px;font-size:40px;font-family:ui-serif,Georgia,Times;letter-spacing:-.3px}
+  .hero p{margin:0;color:var(--muted);font-size:18px;max-width:78ch}
+  .grid{display:grid;grid-template-columns:1fr;gap:14px;margin-top:16px}
+  @media (min-width:940px){.grid{grid-template-columns:1.15fr .85fr}}
+  .card{background:rgba(22,33,44,.92);border:1px solid rgba(255,255,255,.06);border-radius:var(--r);padding:18px}
+  .title{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+  .title h2{margin:0;font-size:16px;color:var(--muted);font-weight:750}
+  .big{font-size:34px;font-weight:900;margin:8px 0 0}
+  .sub{color:var(--muted);margin-top:2px}
+  .pill{display:inline-flex;align-items:center;gap:8px;padding:7px 10px;border-radius:999px;background:rgba(255,255,255,.06);font-weight:850;margin-top:10px}
+  .pill .dot{width:9px;height:9px;border-radius:99px;background:var(--muted)}
+  .pill.bullish .dot{background:var(--ok)} .pill.bearish .dot{background:var(--err)} .pill.neutral .dot{background:var(--gold)}
+  .muted{color:var(--muted)}
+  ul{margin:10px 0 0;padding:0 0 0 16px} li{margin:10px 0}
+  .btnrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+  button{border:0;border-radius:12px;padding:10px 12px;font-weight:850;cursor:pointer;background:rgba(255,255,255,.08);color:var(--text)}
+  button:hover{background:rgba(255,255,255,.12)}
+  input{width:min(520px,100%);padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.06);color:var(--text);outline:none}
+  table{width:100%;border-collapse:collapse;margin-top:14px}
+  th,td{padding:10px 8px;border-bottom:1px solid rgba(255,255,255,.06);text-align:left;vertical-align:top}
+  th{color:var(--muted);font-weight:850;font-size:13px}
+  td{font-size:14px}
+  .small{font-size:12px;color:var(--muted)}
+  code{background:rgba(255,255,255,.07);padding:2px 6px;border-radius:8px}
+  footer{margin-top:18px;color:var(--muted);font-size:13px}
+  .links{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .links a{color:var(--muted)}
+</style>
+"""
 
 def html_shell(
     request: Request,
@@ -825,90 +977,51 @@ def html_shell(
     description: str,
     path: str,
     body_html: str,
+    article_date: Optional[str] = None,
 ) -> str:
     base = get_base_url(request)
     canonical = f"{base}{path}"
     og_image = f"{base}/og.svg"
 
-    head = f"""
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>{title}</title>
-    <meta name="description" content="{description}" />
-    <link rel="canonical" href="{canonical}" />
+    # SEO meta (aggressive but safe)
+    robots = "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1"
 
-    <meta name="google-site-verification" content="{GOOGLE_SITE_VERIFICATION_CONTENT}" />
+    twitter_site_meta = f'<meta name="twitter:site" content="{_escape_html(TWITTER_SITE)}" />' if TWITTER_SITE else ""
 
-    <meta property="og:site_name" content="{APP_NAME}" />
-    <meta property="og:type" content="website" />
-    <meta property="og:title" content="{title}" />
-    <meta property="og:description" content="{description}" />
-    <meta property="og:url" content="{canonical}" />
-    <meta property="og:image" content="{og_image}" />
+    head = (
+        '<meta charset="utf-8" />'
+        '<meta name="viewport" content="width=device-width,initial-scale=1" />'
+        f"<title>{_escape_html(title)}</title>"
+        f'<meta name="description" content="{_escape_html(description)}" />'
+        f'<meta name="robots" content="{robots}" />'
+        f'<link rel="canonical" href="{canonical}" />'
+        f'<link rel="alternate" type="application/rss+xml" title="{_escape_html(APP_NAME)} feed" href="{base}/feed.xml" />'
+        f'<meta name="google-site-verification" content="{_escape_html(GOOGLE_SITE_VERIFICATION_CONTENT)}" />'
+        f'<meta property="og:site_name" content="{_escape_html(APP_NAME)}" />'
+        '<meta property="og:locale" content="nb_NO" />'
+        '<meta property="og:type" content="website" />'
+        f'<meta property="og:title" content="{_escape_html(title)}" />'
+        f'<meta property="og:description" content="{_escape_html(description)}" />'
+        f'<meta property="og:url" content="{canonical}" />'
+        f'<meta property="og:image" content="{og_image}" />'
+        '<meta name="twitter:card" content="summary_large_image" />'
+        f'<meta name="twitter:title" content="{_escape_html(title)}" />'
+        f'<meta name="twitter:description" content="{_escape_html(description)}" />'
+        f'<meta name="twitter:image" content="{og_image}" />'
+        + twitter_site_meta
+        + jsonld_website(base)
+        + jsonld_article(base, title, description, path, date_published=article_date)
+    )
 
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="{title}" />
-    <meta name="twitter:description" content="{description}" />
-    <meta name="twitter:image" content="{og_image}" />
-
-    {jsonld_website(base)}
-    {jsonld_article(base, title, description, path)}
-    """
-
-    style = """
-    <style>
-      :root{--bg:#0f1720;--card:#16212c;--text:#e5e7eb;--muted:#9aa3af;--gold:#d4af37;--ok:#34d399;--err:#fb7185;--max:1060px;--r:16px;}
-      *{box-sizing:border-box}
-      body{margin:0;background:radial-gradient(1200px 800px at 20% 10%,#142234 0%,var(--bg) 55%) no-repeat;color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;line-height:1.45;}
-      a{color:var(--text);text-decoration:none} a:hover{text-decoration:underline}
-      .wrap{max-width:var(--max);margin:0 auto;padding:28px 18px 64px}
-      header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:8px 0 18px}
-      .brand{font-weight:850;letter-spacing:.2px}
-      .nav{display:flex;gap:12px;align-items:center;color:var(--muted);font-size:14px;flex-wrap:wrap}
-      .nav a{color:var(--muted)}
-      .cta{background:var(--gold);color:#0b0f14;padding:10px 14px;border-radius:999px;font-weight:800}
-      .hero{padding:20px 0 6px}
-      .hero h1{margin:10px 0 8px;font-size:40px;font-family:ui-serif,Georgia,Times;letter-spacing:-.3px}
-      .hero p{margin:0;color:var(--muted);font-size:18px;max-width:78ch}
-      .grid{display:grid;grid-template-columns:1fr;gap:14px;margin-top:16px}
-      @media (min-width:940px){.grid{grid-template-columns:1.15fr .85fr}}
-      .card{background:rgba(22,33,44,.92);border:1px solid rgba(255,255,255,.06);border-radius:var(--r);padding:18px}
-      .title{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
-      .title h2{margin:0;font-size:16px;color:var(--muted);font-weight:750}
-      .big{font-size:34px;font-weight:900;margin:8px 0 0}
-      .sub{color:var(--muted);margin-top:2px}
-      .pill{display:inline-flex;align-items:center;gap:8px;padding:7px 10px;border-radius:999px;background:rgba(255,255,255,.06);font-weight:850;margin-top:10px}
-      .pill .dot{width:9px;height:9px;border-radius:99px;background:var(--muted)}
-      .pill.bullish .dot{background:var(--ok)} .pill.bearish .dot{background:var(--err)} .pill.neutral .dot{background:var(--gold)}
-      .muted{color:var(--muted)}
-      ul{margin:10px 0 0;padding:0 0 0 16px} li{margin:10px 0}
-      .btnrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
-      button{border:0;border-radius:12px;padding:10px 12px;font-weight:850;cursor:pointer;background:rgba(255,255,255,.08);color:var(--text)}
-      button:hover{background:rgba(255,255,255,.12)}
-      input{width:min(520px,100%);padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.06);color:var(--text);outline:none}
-      table{width:100%;border-collapse:collapse;margin-top:14px}
-      th,td{padding:10px 8px;border-bottom:1px solid rgba(255,255,255,.06);text-align:left;vertical-align:top}
-      th{color:var(--muted);font-weight:850;font-size:13px}
-      td{font-size:14px}
-      .small{font-size:12px;color:var(--muted)}
-      code{background:rgba(255,255,255,.07);padding:2px 6px;border-radius:8px}
-      footer{margin-top:18px;color:var(--muted);font-size:13px}
-      .links{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px}
-      .links a{color:var(--muted)}
-    </style>
-    """
-
-    return f"""<!doctype html>
-<html lang="no">
-<head>
-{head}
-{style}
-</head>
-<body>
-{body_html}
-</body>
-</html>
-"""
+    return (
+        "<!doctype html>"
+        '<html lang="no"><head>'
+        + head
+        + COMMON_STYLE
+        + "</head><body>"
+        + body_html
+        + "</body></html>"
+    )
 
 
 # =============================================================================
@@ -933,14 +1046,13 @@ def health() -> Dict[str, Any]:
         "stripe_price_id_prefix": (e["price_id"][:10] + "...") if e["price_id"] else "",
         "stripe_webhook_secret_set": bool(e["webhook_secret"]),
         "brevo_enabled": brevo_configured(),
-        "version": "3.0",
+        "version": "3.1",
     }
 
 @app.get("/api/debug/stripe")
 def debug_stripe(request: Request) -> Dict[str, Any]:
     e = stripe_env()
     base = get_base_url(request)
-    # show effective URLs
     success = e["success_url"] or f"{base}/success"
     cancel = e["cancel_url"] or f"{base}/premium"
     return {
@@ -998,7 +1110,6 @@ def api_history(limit: int = 200, x_api_key: str | None = Header(default=None)):
         return JSONResponse(status_code=401, content={"error": "PREMIUM_REQUIRED", "message": "Historikk er kun for medlemmer."})
     rows = read_history(limit=limit)
     rows = add_forward_returns(rows, days_list=(7, 30))
-    # newest first view for stats
     newest_first = list(reversed(rows))
     stats = signal_stats_last30(newest_first)
     return {"count": len(rows), "items": rows, "stats": stats}
@@ -1079,7 +1190,7 @@ def api_check_signal(admin_key: str = ""):
             continue
 
         to_email = row["email"]
-        subject = f"Gullbrief: signal endret til {sig.upper()}"
+        subject = f"{APP_NAME}: signal endret til {sig.upper()}"
         body = (
             "Signalet i Gullbrief har endret seg.\n\n"
             f"Nytt signal: {sig.upper()}\n"
@@ -1120,7 +1231,7 @@ def api_send_daily_premium(admin_key: str = ""):
     tscore = last.get("trend_score") if isinstance(last.get("trend_score"), int) else None
     rep = (last.get("premium_report") or "").strip()
 
-    subject = f"Gullbrief Premium ({today}) – {sig}"
+    subject = f"{APP_NAME} Premium ({today}) – {sig}"
 
     header_bits = []
     if price is not None:
@@ -1133,7 +1244,7 @@ def api_send_daily_premium(admin_key: str = ""):
         header_bits.append(f"Trend score: {tscore}/100")
 
     body = (
-        "Gullbrief Premium – daglig kommentar\n"
+        f"{APP_NAME} Premium – daglig kommentar\n"
         + ((" | ".join(header_bits)) + "\n\n" if header_bits else "\n")
         + (rep + "\n\n" if rep else "Premium-rapport ikke tilgjengelig i dag.\n\n")
         + "Arkiv: /archive\n"
@@ -1162,6 +1273,17 @@ def api_send_daily_premium(admin_key: str = ""):
     conn.close()
     return {"ok": True, "sent": sent, "date": today}
 
+@app.get("/api/tasks/refresh-snapshot")
+def api_refresh_snapshot(admin_key: str = ""):
+    """
+    Cron-friendly: refreshes data and stores snapshot if needed.
+    Use: GET /api/tasks/refresh-snapshot?admin_key=...
+    """
+    if admin_key != ADMIN_API_KEY:
+        return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED", "message": "admin_key feil."})
+    raw = get_cached_brief(force_refresh=True)
+    return {"ok": True, "updated_at": raw.get("updated_at"), "stored": True}
+
 @app.post("/api/tasks/send-test-email")
 async def api_send_test_email(req: Request, admin_key: str = ""):
     try:
@@ -1176,9 +1298,9 @@ async def api_send_test_email(req: Request, admin_key: str = ""):
         if "@" not in email:
             return JSONResponse(status_code=400, content={"error": "BAD_EMAIL", "message": "Ugyldig e-post."})
 
-        subject = "Gullbrief test ✅"
+        subject = f"{APP_NAME} test ✅"
         msg = (
-            "Dette er en testmail fra Gullbrief.\n\n"
+            f"Dette er en testmail fra {APP_NAME}.\n\n"
             "Hvis du leser dette i innboksen (ikke spam), er Brevo-oppsettet i orden.\n"
         )
 
@@ -1234,7 +1356,8 @@ async def api_stripe_create_checkout(req: Request):
 
 @app.get("/success", response_class=HTMLResponse)
 def success_page(session_id: str = ""):
-    return HTMLResponse(SUCCESS_HTML.replace("__SESSION_ID__", session_id or ""))
+    html = SUCCESS_HTML.replace("__SESSION_ID__", session_id or "")
+    return HTMLResponse(html)
 
 @app.get("/api/stripe/claim-key")
 def api_stripe_claim_key(session_id: str = ""):
@@ -1347,19 +1470,27 @@ async def stripe_webhook(request: Request):
 
 
 # =============================================================================
-# SEO: robots + sitemap + OG image
+# SEO: robots + sitemap + feed + OG image
 # =============================================================================
 
 @app.get("/robots.txt", response_class=PlainTextResponse)
 def robots_txt(request: Request):
     base = get_base_url(request)
-    txt = f"User-agent: *\nAllow: /\n\nSitemap: {base}/sitemap.xml\n"
+    txt = (
+        "User-agent: *\n"
+        "Allow: /\n"
+        "Disallow: /api/\n"
+        "Disallow: /success\n\n"
+        f"Sitemap: {base}/sitemap.xml\n"
+        f"Feed: {base}/feed.xml\n"
+    )
     return PlainTextResponse(txt)
 
 @app.get("/sitemap.xml")
 def sitemap_xml(request: Request):
     base = get_base_url(request)
-    urls = [
+
+    static_urls = [
         ("/", "daily"),
         ("/premium", "weekly"),
         ("/archive", "daily"),
@@ -1368,9 +1499,21 @@ def sitemap_xml(request: Request):
         ("/xauusd", "daily"),
         ("/gullpris-signal", "daily"),
     ]
+
+    archive_days = get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)
     xml_items = []
-    for path, freq in urls:
-        xml_items.append(f"<url><loc>{base}{path}</loc><changefreq>{freq}</changefreq></url>")
+
+    def add_url(path: str, freq: str, lastmod: Optional[str] = None) -> None:
+        loc = f"{base}{path}"
+        lm = f"<lastmod>{lastmod}</lastmod>" if lastmod else ""
+        xml_items.append(f"<url><loc>{loc}</loc>{lm}<changefreq>{freq}</changefreq></url>")
+
+    for path, freq in static_urls:
+        add_url(path, freq)
+
+    for d in archive_days:
+        add_url(f"/archive/{d}", "daily", lastmod=d)
+
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
@@ -1379,11 +1522,63 @@ def sitemap_xml(request: Request):
     )
     return Response(content=xml, media_type="application/xml")
 
+@app.get("/feed.xml")
+def feed_xml(request: Request):
+    """
+    Simple RSS feed of latest snapshots (SEO + discovery).
+    """
+    base = get_base_url(request)
+    rows = read_history(limit=max(200, FEED_ITEMS * 5))
+    if not rows:
+        rss = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<rss version="2.0"><channel>'
+            f"<title>{_escape_html(APP_NAME)} – oppdateringer</title>"
+            f"<link>{base}/</link>"
+            f"<description>{_escape_html(APP_NAME)}: gullpris, signal og daglige snapshots.</description>"
+            f"<language>no</language>"
+            "</channel></rss>"
+        )
+        return Response(content=rss, media_type="application/rss+xml")
+
+    items_xml = []
+    # newest first
+    for r in reversed(rows)[-FEED_ITEMS:][::-1]:
+        upd = str(r.get("updated_at") or "")
+        d = _date_yyyy_mm_dd(upd) or ""
+        sig = str(r.get("signal") or "neutral").upper()
+        price = safe_float(r.get("price_usd"))
+        title = f"{APP_NAME}: {sig} – {d}" + (f" – {price:.2f} USD" if price is not None else "")
+        link = f"{base}/archive/{d}" if d else f"{base}/archive"
+        guid = link
+        desc = (r.get("macro_summary") or "")[:220]
+        pubdate = upd
+
+        items_xml.append(
+            "<item>"
+            f"<title>{_escape_html(title)}</title>"
+            f"<link>{_escape_html(link)}</link>"
+            f"<guid>{_escape_html(guid)}</guid>"
+            f"<description>{_escape_html(desc)}</description>"
+            f"<pubDate>{_escape_html(pubdate)}</pubDate>"
+            "</item>"
+        )
+
+    channel = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<rss version="2.0"><channel>'
+        f"<title>{_escape_html(APP_NAME)} – daglige snapshots</title>"
+        f"<link>{base}/</link>"
+        f"<description>{_escape_html(APP_NAME)}: gullpris, signal og makro, oppdatert daglig.</description>"
+        "<language>no</language>"
+        + "".join(items_xml)
+        + "</channel></rss>"
+    )
+    return Response(content=channel, media_type="application/rss+xml")
+
 @app.get("/og.svg")
 def og_svg(request: Request):
-    # Enkelt og stabilt preview-bilde for deling i sosiale medier
     base = get_base_url(request)
-    # Minimal SVG 1200x630
     svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630">
   <defs>
     <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
@@ -1395,16 +1590,16 @@ def og_svg(request: Request):
   <rect width="1200" height="630" fill="url(#g)"/>
   <circle cx="980" cy="160" r="120" fill="#d4af37" opacity="0.18"/>
   <circle cx="1040" cy="210" r="160" fill="#d4af37" opacity="0.10"/>
-  <text x="80" y="210" fill="#e5e7eb" font-size="64" font-family="Georgia, serif" font-weight="700">Gullbrief</text>
+  <text x="80" y="210" fill="#e5e7eb" font-size="64" font-family="Georgia, serif" font-weight="700">{_escape_html(APP_NAME)}</text>
   <text x="80" y="290" fill="#9aa3af" font-size="34" font-family="system-ui, -apple-system, Segoe UI, Roboto, Arial">Gullpris analyse • signal • makro (daglig)</text>
-  <text x="80" y="420" fill="#e5e7eb" font-size="44" font-family="system-ui, -apple-system, Segoe UI, Roboto, Arial" font-weight="800">{base.replace("https://","").replace("http://","")}</text>
+  <text x="80" y="420" fill="#e5e7eb" font-size="44" font-family="system-ui, -apple-system, Segoe UI, Roboto, Arial" font-weight="800">{_escape_html(base.replace("https://","").replace("http://",""))}</text>
   <text x="80" y="500" fill="#9aa3af" font-size="28" font-family="system-ui, -apple-system, Segoe UI, Roboto, Arial">Gratis i dag • Premium: arkiv + signalhistorikk</text>
 </svg>"""
     return Response(content=svg, media_type="image/svg+xml")
 
 
 # =============================================================================
-# Pages: /, /premium, /archive + SEO landing pages
+# Pages: templates (NO f-strings with JS braces)
 # =============================================================================
 
 def footer_links() -> str:
@@ -1422,392 +1617,317 @@ def footer_links() -> str:
     </footer>
     """
 
-@app.get("/", response_class=HTMLResponse)
-def index(request: Request) -> HTMLResponse:
-    title = "Gullpris analyse – daglig gullbrief og markedssignal"
-    desc = "Daglig analyse av gullprisen: signal, trend, makro og nyheter. Premium gir arkiv, signalhistorikk og e-postvarsler."
-    body = f"""
-    <div class="wrap">
-      <header>
-        <div class="brand">{APP_NAME}</div>
-        <div class="nav">
-          <a href="/">Analyse</a>
-          <a href="/gullpris">Gullpris</a>
-          <a href="/archive">Arkiv</a>
-          <a class="cta" href="/premium">Premium</a>
-        </div>
-      </header>
-
-      <section class="hero">
-        <h1>Gullpris analyse uten støy.</h1>
-        <p>{desc}</p>
-      </section>
-
-      <section class="grid">
-        <div class="card">
-          <div class="title"><h2>Dagens status</h2><div class="muted" id="updatedAt">Oppdaterer…</div></div>
-          <div class="big" id="price">$–</div>
-          <div class="sub" id="change">–</div>
-          <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
-          <p class="muted" style="margin-top:12px" id="reason">–</p>
-
-          <h2 style="margin-top:14px">Makro i dag</h2>
-          <p class="muted" id="macro">–</p>
-
-          <div class="btnrow">
-            <button id="btnReload">Oppdater</button>
-            <button id="btnRefresh">Hard refresh</button>
-            <button onclick="location.href='/archive'">Åpne arkiv</button>
-            <button onclick="location.href='/premium'">Premium</button>
-          </div>
-
-          <div class="muted" id="status" style="margin-top:8px">Status: …</div>
-        </div>
-
-        <div class="card">
-          <div class="title"><h2>Relevante nyheter</h2><div class="muted">Gratis</div></div>
-          <ul id="headlines"></ul>
-        </div>
-      </section>
-
-      {footer_links()}
+INDEX_BODY_TEMPLATE = """
+<div class="wrap">
+  <header>
+    <div class="brand">__APP_NAME__</div>
+    <div class="nav">
+      <a href="/">Analyse</a>
+      <a href="/gullpris">Gullpris</a>
+      <a href="/archive">Arkiv</a>
+      <a class="cta" href="/premium">Premium</a>
     </div>
+  </header>
 
-    <script>
-      const $ = (id) => document.getElementById(id);
-      const fmtPct = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ((Number(x)>0?"+":"") + Number(x).toFixed(2) + "%");
-      const fmtPrice = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ("$" + Number(x).toLocaleString(undefined,{{maximumFractionDigits:2}}));
-      const pillClass = (s) => (s||"").toLowerCase().includes("bull") ? "bullish" : ((s||"").toLowerCase().includes("bear") ? "bearish" : "neutral");
+  <section class="hero">
+    <h1>Gullpris analyse uten støy.</h1>
+    <p>__DESC__</p>
+  </section>
 
-      async function loadToday(){{
-        try{{
-          $("status").textContent = "Status: Laster…";
-          const res = await fetch("/api/public/today", {{cache:"no-store"}});
-          const data = await res.json();
-          if(!res.ok) throw new Error(data?.message || ("HTTP " + res.status));
-          $("updatedAt").textContent = "Oppdatert: " + (data.updated_at || "–");
-          $("price").textContent = fmtPrice(data?.gold?.price_usd);
-          $("change").textContent = "Endring: " + fmtPct(data?.gold?.change_pct);
-          const state = data?.signal?.state || "neutral";
-          $("signalText").textContent = "Signal: " + state;
-          $("signalPill").className = "pill " + pillClass(state);
-          $("reason").textContent = data?.signal?.reason_short || "–";
-          $("macro").textContent = data?.macro?.summary_short || "–";
+  <section class="grid">
+    <div class="card">
+      <div class="title"><h2>Dagens status</h2><div class="muted" id="updatedAt">Oppdaterer…</div></div>
+      <div class="big" id="price">$–</div>
+      <div class="sub" id="change">–</div>
+      <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
+      <p class="muted" style="margin-top:12px" id="reason">–</p>
 
-          const ul = $("headlines"); ul.innerHTML = "";
-          (data.headlines||[]).forEach(h=>{{
-            const li=document.createElement("li");
-            const a=document.createElement("a");
-            a.href=h.link; a.target="_blank"; a.rel="noopener noreferrer";
-            a.textContent=h.title || "(uten tittel)";
-            const d=document.createElement("div"); d.className="muted";
-            d.textContent=(h.source||"Kilde") + (h.published?(" | "+h.published):"");
-            li.appendChild(a); li.appendChild(d); ul.appendChild(li);
-          }});
-          $("status").textContent = "Status: OK";
-        }}catch(e){{
-          $("status").textContent = "Status: Feil: " + e;
-        }}
-      }}
+      <h2 style="margin-top:14px">Makro i dag</h2>
+      <p class="muted" id="macro">–</p>
 
-      $("btnReload").addEventListener("click", loadToday);
-      $("btnRefresh").addEventListener("click", async () => {{
-        await fetch("/api/brief/refresh", {{cache:"no-store"}}).catch(()=>{{}});
-        loadToday();
-      }});
-
-      loadToday();
-    </script>
-    """
-    return HTMLResponse(html_shell(request, title=title, description=desc, path="/", body_html=body))
-
-@app.get("/premium", response_class=HTMLResponse)
-def premium_page(request: Request) -> HTMLResponse:
-    title = "Gullbrief Premium – gullpris analyse, signalhistorikk og arkiv"
-    desc = "Premium: daglig rapport, signalhistorikk (siste 30), arkiv med 7d/30d, og e-postvarsler."
-    body = f"""
-    <div class="wrap">
-      <header>
-        <div class="brand">{APP_NAME}</div>
-        <div class="nav">
-          <a href="/">Analyse</a>
-          <a href="/gullpris">Gullpris</a>
-          <a href="/archive">Arkiv</a>
-          <a class="cta" href="/premium">Premium</a>
-        </div>
-      </header>
-
-      <section class="hero">
-        <h1>Premium: mer data, mindre støy.</h1>
-        <p>Få daglig premium-rapport, signalhistorikk og arkiv. E-post ved signalendring + daglig utsendelse.</p>
-      </section>
-
-      <section class="grid">
-        <div class="card">
-          <div class="title"><h2>Dette får du</h2><div class="muted">Premium</div></div>
-          <ul>
-            <li><b>Signalhistorikk (siste 30)</b> + treffsikkerhet</li>
-            <li><b>Arkiv</b> med 7d/30d etter signal</li>
-            <li><b>Daglig premium-rapport</b> på norsk</li>
-            <li><b>E-postvarsler</b> (daglig + ved signalendring)</li>
-          </ul>
-
-          <h2 style="margin-top:14px">Kjøp Premium</h2>
-          <p class="muted">Skriv e-post og gå til Stripe checkout.</p>
-          <div class="btnrow">
-            <input id="payEmail" placeholder="E-post for kjøp" autocomplete="email" />
-            <button class="cta" id="btnPay" style="border:0">Kjøp premium</button>
-          </div>
-          <div class="small" id="status" style="margin-top:10px"></div>
-        </div>
-
-        <div class="card">
-          <div class="title"><h2>Hvordan det fungerer</h2><div class="muted">Kort</div></div>
-          <p class="muted">
-            Etter betaling sendes du til success-side hvor premium-nøkkelen hentes automatisk.
-            Derfra åpner du arkivet og nøkkelen lagres lokalt i nettleseren.
-          </p>
-          <div class="btnrow" style="margin-top:12px">
-            <button onclick="location.href='/archive'">Jeg har allerede nøkkel</button>
-            <button onclick="location.href='/gullpris'">Se gullpris i dag</button>
-          </div>
-        </div>
-      </section>
-
-      {footer_links()}
-    </div>
-
-    <script>
-      const $ = (id)=>document.getElementById(id);
-      async function startCheckout(){{
-        const email = $("payEmail").value.trim();
-        if(!email.includes("@")){{ $("status").textContent="Skriv inn gyldig e-post."; return; }}
-        try{{
-          $("status").textContent="Åpner Stripe checkout…";
-          const res = await fetch("/api/stripe/create-checkout", {{
-            method:"POST",
-            headers:{{"Content-Type":"application/json"}},
-            body: JSON.stringify({{email}})
-          }});
-          const data = await res.json();
-          if(!res.ok){{ $("status").textContent = data?.message || ("HTTP "+res.status); return; }}
-          location.href = data.url;
-        }}catch(e){{
-          $("status").textContent = "Feil: " + e;
-        }}
-      }}
-      $("btnPay").addEventListener("click", startCheckout);
-    </script>
-    """
-    return HTMLResponse(html_shell(request, title=title, description=desc, path="/premium", body_html=body))
-
-@app.get("/archive", response_class=HTMLResponse)
-def archive_page(request: Request) -> HTMLResponse:
-    title = "Gullbrief arkiv – signalhistorikk og avkastning etter signal"
-    desc = "Se siste snapshots gratis. Premium gir full historikk, signalhistorikk (siste 30) og 7d/30d etter signal."
-    body = ARCHIVE_HTML  # reuse the JS-heavy archive you already like
-    # Wrap archive inside our SEO shell for consistent meta/canonical
-    wrapped = html_shell(request, title=title, description=desc, path="/archive", body_html=body.replace("<!doctype html>", "").replace("<html lang=\"no\">", "").replace("</html>", ""))
-    return HTMLResponse(wrapped)
-
-def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, intro: str) -> HTMLResponse:
-    body = f"""
-    <div class="wrap">
-      <header>
-        <div class="brand">{APP_NAME}</div>
-        <div class="nav">
-          <a href="/">Analyse</a>
-          <a href="/gullpris">Gullpris</a>
-          <a href="/archive">Arkiv</a>
-          <a class="cta" href="/premium">Premium</a>
-        </div>
-      </header>
-
-      <section class="hero">
-        <h1>{h1}</h1>
-        <p>{intro}</p>
-      </section>
-
-      <section class="grid">
-        <div class="card">
-          <div class="title"><h2>Dagens status</h2><div class="muted" id="updatedAt">Oppdaterer…</div></div>
-          <div class="big" id="price">$–</div>
-          <div class="sub" id="change">–</div>
-          <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
-          <p class="muted" style="margin-top:12px" id="reason">–</p>
-          <h2 style="margin-top:14px">Kort makro</h2>
-          <p class="muted" id="macro">–</p>
-
-          <div class="btnrow">
-            <button id="btnReload">Oppdater</button>
-            <button onclick="location.href='/premium'">Premium</button>
-            <button onclick="location.href='/archive'">Arkiv</button>
-          </div>
-          <div class="muted" id="status" style="margin-top:8px">Status: …</div>
-        </div>
-
-        <div class="card">
-          <div class="title"><h2>Relaterte sider</h2><div class="muted">SEO</div></div>
-          <ul>
-            <li><a href="/gullpris-analyse">Gullpris analyse</a></li>
-            <li><a href="/gullpris-signal">Gullpris signal</a></li>
-            <li><a href="/xauusd">XAUUSD</a></li>
-            <li><a href="/premium">Premium</a></li>
-          </ul>
-          <p class="muted">Tips: Del denne siden på Twitter/X for rask crawling.</p>
-        </div>
-      </section>
-
-      {footer_links()}
-    </div>
-
-    <script>
-      const $ = (id) => document.getElementById(id);
-      const fmtPct = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ((Number(x)>0?"+":"") + Number(x).toFixed(2) + "%");
-      const fmtPrice = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ("$" + Number(x).toLocaleString(undefined,{{maximumFractionDigits:2}}));
-      const pillClass = (s) => (s||"").toLowerCase().includes("bull") ? "bullish" : ((s||"").toLowerCase().includes("bear") ? "bearish" : "neutral");
-
-      async function loadToday(){{
-        try{{
-          $("status").textContent = "Status: Laster…";
-          const res = await fetch("/api/public/today", {{cache:"no-store"}});
-          const data = await res.json();
-          if(!res.ok) throw new Error(data?.message || ("HTTP " + res.status));
-          $("updatedAt").textContent = "Oppdatert: " + (data.updated_at || "–");
-          $("price").textContent = fmtPrice(data?.gold?.price_usd);
-          $("change").textContent = "Endring: " + fmtPct(data?.gold?.change_pct);
-          const state = data?.signal?.state || "neutral";
-          $("signalText").textContent = "Signal: " + state;
-          $("signalPill").className = "pill " + pillClass(state);
-          $("reason").textContent = data?.signal?.reason_short || "–";
-          $("macro").textContent = data?.macro?.summary_short || "–";
-          $("status").textContent = "Status: OK";
-        }}catch(e){{
-          $("status").textContent = "Status: Feil: " + e;
-        }}
-      }}
-      $("btnReload").addEventListener("click", loadToday);
-      loadToday();
-    </script>
-    """
-    return HTMLResponse(html_shell(request, title=title, description=desc, path=path, body_html=body))
-
-@app.get("/gullpris", response_class=HTMLResponse)
-def page_gullpris(request: Request) -> HTMLResponse:
-    return seo_landing(
-        request,
-        path="/gullpris",
-        title="Gullpris i dag – pris, signal og kort analyse",
-        desc="Se gullpris i dag (USD), signal og kort makro. Oppdatert daglig. Premium gir arkiv og signalhistorikk.",
-        h1="Gullpris i dag",
-        intro="Pris, signal og kort kontekst. Oppdatert daglig. For historikk og treffsikkerhet: Premium.",
-    )
-
-@app.get("/gullpris-analyse", response_class=HTMLResponse)
-def page_gullpris_analyse(request: Request) -> HTMLResponse:
-    return seo_landing(
-        request,
-        path="/gullpris-analyse",
-        title="Gullpris analyse – daglig signal og makro",
-        desc="Daglig gullpris analyse: signal, trend og makrodrivere. Se dagens status og oppdateringer.",
-        h1="Gullpris analyse",
-        intro="Nøktern daglig analyse av gull. Fokus på trend, signal og makro.",
-    )
-
-@app.get("/xauusd", response_class=HTMLResponse)
-def page_xauusd(request: Request) -> HTMLResponse:
-    return seo_landing(
-        request,
-        path="/xauusd",
-        title="XAUUSD – gull mot dollar: signal og analyse",
-        desc="XAUUSD (gull mot USD): daglig signal, trend og kort makro. Premium gir arkiv og signalhistorikk.",
-        h1="XAUUSD",
-        intro="Gull mot USD: pris, signal og korte drivere. Oppdatert daglig.",
-    )
-
-@app.get("/gullpris-signal", response_class=HTMLResponse)
-def page_gullpris_signal(request: Request) -> HTMLResponse:
-    return seo_landing(
-        request,
-        path="/gullpris-signal",
-        title="Gullpris signal – bullish/bearish og treffsikkerhet",
-        desc="Gullpris signal (bullish/bearish/neutral) og forklaring. Premium viser signalhistorikk og 7d/30d etter signal.",
-        h1="Gullpris signal",
-        intro="Se dagens signal og hvorfor det er satt. Premium viser historikk, 7d/30d og treffsikkerhet (siste 30).",
-    )
-
-
-# =============================================================================
-# ARCHIVE_HTML and SUCCESS_HTML (keep your working versions)
-# =============================================================================
-
-ARCHIVE_HTML = """<!doctype html>
-<html lang="no">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Gullbrief Arkiv</title>
-</head>
-<body>
-  <div class="wrap">
-    <header>
-      <div class="brand">Gullbrief Arkiv</div>
-      <div class="nav">
-        <a href="/">Til analyse</a>
-        <a class="cta" href="/premium">Premium</a>
-      </div>
-    </header>
-
-    <div class="grid" style="grid-template-columns:1fr">
-      <div class="card">
-        <div style="font-size:18px;font-weight:900">Teaser (gratis)</div>
-        <div class="muted">Siste 3 snapshots. Full historikk ligger bak premium.</div>
-        <div id="teaserStatus" class="small" style="margin-top:10px"></div>
-        <table id="teaserTbl" style="display:none">
-          <thead><tr><th>Dato</th><th>Pris</th><th>Signal</th><th>7d</th><th>30d</th><th>Notat</th></tr></thead>
-          <tbody id="teaserBody"></tbody>
-        </table>
+      <div class="btnrow">
+        <button id="btnReload">Oppdater</button>
+        <button id="btnRefresh">Hard refresh</button>
+        <button onclick="location.href='/archive'">Åpne arkiv</button>
+        <button onclick="location.href='/premium'">Premium</button>
       </div>
 
-      <div class="card">
-        <div style="font-size:18px;font-weight:900">Premium</div>
-        <div class="muted">Lim inn premium-nøkkel. Den lagres lokalt i nettleseren (localStorage).</div>
+      <div class="muted" id="status" style="margin-top:8px">Status: …</div>
+    </div>
 
-        <div class="btnrow" style="margin-top:12px">
-          <input id="key" placeholder="Premium-nøkkel" autocomplete="off" />
-          <button class="cta" id="btnSave">Lagre</button>
-          <button id="btnClear">Fjern</button>
-          <button id="btnLoad">Last arkiv</button>
-        </div>
+    <div class="card">
+      <div class="title"><h2>Relevante nyheter</h2><div class="muted">Gratis</div></div>
+      <ul id="headlines"></ul>
+    </div>
+  </section>
 
-        <div class="btnrow" style="margin-top:10px">
-          <input id="email" placeholder="E-post for varsel (premium)" autocomplete="email" />
-          <button id="btnEmail">Aktiver e-postvarsel</button>
-        </div>
+  __FOOTER__
+</div>
 
-        <div class="btnrow" style="margin-top:12px">
-          <input id="payEmail" placeholder="E-post for kjøp (Stripe)" autocomplete="email" />
-          <button class="cta" id="btnPay">Kjøp premium</button>
-        </div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const fmtPct = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ((Number(x)>0?"+":"") + Number(x).toFixed(2) + "%");
+  const fmtPrice = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ("$" + Number(x).toLocaleString(undefined,{maximumFractionDigits:2}));
+  const pillClass = (s) => (s||"").toLowerCase().includes("bull") ? "bullish" : ((s||"").toLowerCase().includes("bear") ? "bearish" : "neutral");
 
-        <div id="status" class="small" style="margin-top:10px"></div>
+  async function loadToday(){
+    try{
+      $("status").textContent = "Status: Laster…";
+      const res = await fetch("/api/public/today", {cache:"no-store"});
+      const data = await res.json();
+      if(!res.ok) throw new Error(data?.message || ("HTTP " + res.status));
+      $("updatedAt").textContent = "Oppdatert: " + (data.updated_at || "–");
+      $("price").textContent = fmtPrice(data?.gold?.price_usd);
+      $("change").textContent = "Endring: " + fmtPct(data?.gold?.change_pct);
+      const state = data?.signal?.state || "neutral";
+      $("signalText").textContent = "Signal: " + state;
+      $("signalPill").className = "pill " + pillClass(state);
+      $("reason").textContent = data?.signal?.reason_short || "–";
+      $("macro").textContent = data?.macro?.summary_short || "–";
 
-        <div class="card" style="margin-top:12px">
-          <div style="font-weight:900">Signalhistorikk (siste 30 signaler)</div>
-          <div class="small" id="statsBox" style="margin-top:8px">Laster…</div>
-        </div>
+      const ul = $("headlines"); ul.innerHTML = "";
+      (data.headlines||[]).forEach(h=>{
+        const li=document.createElement("li");
+        const a=document.createElement("a");
+        a.href=h.link; a.target="_blank"; a.rel="noopener noreferrer";
+        a.textContent=h.title || "(uten tittel)";
+        const d=document.createElement("div"); d.className="muted";
+        d.textContent=(h.source||"Kilde") + (h.published?(" | "+h.published):"");
+        li.appendChild(a); li.appendChild(d); ul.appendChild(li);
+      });
+      $("status").textContent = "Status: OK";
+    }catch(e){
+      $("status").textContent = "Status: Feil: " + e;
+    }
+  }
 
-        <table id="tbl" style="display:none">
-          <thead><tr><th>Dato</th><th>Pris</th><th>Signal</th><th>7d</th><th>30d</th><th>Notat</th></tr></thead>
-          <tbody id="body"></tbody>
-        </table>
+  $("btnReload").addEventListener("click", loadToday);
+  $("btnRefresh").addEventListener("click", async () => {
+    await fetch("/api/brief/refresh", {cache:"no-store"}).catch(()=>{});
+    loadToday();
+  });
 
-        <div class="small" style="margin-top:10px">
-          API: <code>/api/history</code> med header <code>x-api-key</code>.
-        </div>
+  loadToday();
+</script>
+"""
+
+PREMIUM_BODY_TEMPLATE = """
+<div class="wrap">
+  <header>
+    <div class="brand">__APP_NAME__</div>
+    <div class="nav">
+      <a href="/">Analyse</a>
+      <a href="/gullpris">Gullpris</a>
+      <a href="/archive">Arkiv</a>
+      <a class="cta" href="/premium">Premium</a>
+    </div>
+  </header>
+
+  <section class="hero">
+    <h1>Premium: mer data, mindre støy.</h1>
+    <p>Få daglig premium-rapport, signalhistorikk og arkiv. E-post ved signalendring + daglig utsendelse.</p>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <div class="title"><h2>Dette får du</h2><div class="muted">Premium</div></div>
+      <ul>
+        <li><b>Signalhistorikk (siste 30)</b> + treffsikkerhet</li>
+        <li><b>Arkiv</b> med 7d/30d etter signal</li>
+        <li><b>Daglig premium-rapport</b> på norsk</li>
+        <li><b>E-postvarsler</b> (daglig + ved signalendring)</li>
+      </ul>
+
+      <h2 style="margin-top:14px">Kjøp Premium</h2>
+      <p class="muted">Skriv e-post og gå til Stripe checkout.</p>
+      <div class="btnrow">
+        <input id="payEmail" placeholder="E-post for kjøp" autocomplete="email" />
+        <button class="cta" id="btnPay" style="border:0">Kjøp premium</button>
+      </div>
+      <div class="small" id="status" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <div class="title"><h2>Hvordan det fungerer</h2><div class="muted">Kort</div></div>
+      <p class="muted">
+        Etter betaling sendes du til success-side hvor premium-nøkkelen hentes automatisk.
+        Derfra åpner du arkivet og nøkkelen lagres lokalt i nettleseren.
+      </p>
+      <div class="btnrow" style="margin-top:12px">
+        <button onclick="location.href='/archive'">Jeg har allerede nøkkel</button>
+        <button onclick="location.href='/gullpris'">Se gullpris i dag</button>
+      </div>
+    </div>
+  </section>
+
+  __FOOTER__
+</div>
+
+<script>
+  const $ = (id)=>document.getElementById(id);
+  async function startCheckout(){
+    const email = $("payEmail").value.trim();
+    if(!email.includes("@")){ $("status").textContent="Skriv inn gyldig e-post."; return; }
+    try{
+      $("status").textContent="Åpner Stripe checkout…";
+      const res = await fetch("/api/stripe/create-checkout", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({email})
+      });
+      const data = await res.json();
+      if(!res.ok){ $("status").textContent = data?.message || ("HTTP "+res.status); return; }
+      location.href = data.url;
+    }catch(e){
+      $("status").textContent = "Feil: " + e;
+    }
+  }
+  $("btnPay").addEventListener("click", startCheckout);
+</script>
+"""
+
+SEO_LANDING_TEMPLATE = """
+<div class="wrap">
+  <header>
+    <div class="brand">__APP_NAME__</div>
+    <div class="nav">
+      <a href="/">Analyse</a>
+      <a href="/gullpris">Gullpris</a>
+      <a href="/archive">Arkiv</a>
+      <a class="cta" href="/premium">Premium</a>
+    </div>
+  </header>
+
+  <section class="hero">
+    <h1>__H1__</h1>
+    <p>__INTRO__</p>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <div class="title"><h2>Dagens status</h2><div class="muted" id="updatedAt">Oppdaterer…</div></div>
+      <div class="big" id="price">$–</div>
+      <div class="sub" id="change">–</div>
+      <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
+      <p class="muted" style="margin-top:12px" id="reason">–</p>
+      <h2 style="margin-top:14px">Kort makro</h2>
+      <p class="muted" id="macro">–</p>
+
+      <div class="btnrow">
+        <button id="btnReload">Oppdater</button>
+        <button onclick="location.href='/premium'">Premium</button>
+        <button onclick="location.href='/archive'">Arkiv</button>
+      </div>
+      <div class="muted" id="status" style="margin-top:8px">Status: …</div>
+    </div>
+
+    <div class="card">
+      <div class="title"><h2>Relaterte sider</h2><div class="muted">SEO</div></div>
+      <ul>
+        <li><a href="/gullpris-analyse">Gullpris analyse</a></li>
+        <li><a href="/gullpris-signal">Gullpris signal</a></li>
+        <li><a href="/xauusd">XAUUSD</a></li>
+        <li><a href="/premium">Premium</a></li>
+      </ul>
+      <p class="muted">Tips: Del denne siden i sosiale medier for rask crawling.</p>
+    </div>
+  </section>
+
+  __FOOTER__
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const fmtPct = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ((Number(x)>0?"+":"") + Number(x).toFixed(2) + "%");
+  const fmtPrice = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ("$" + Number(x).toLocaleString(undefined,{maximumFractionDigits:2}));
+  const pillClass = (s) => (s||"").toLowerCase().includes("bull") ? "bullish" : ((s||"").toLowerCase().includes("bear") ? "bearish" : "neutral");
+
+  async function loadToday(){
+    try{
+      $("status").textContent = "Status: Laster…";
+      const res = await fetch("/api/public/today", {cache:"no-store"});
+      const data = await res.json();
+      if(!res.ok) throw new Error(data?.message || ("HTTP " + res.status));
+      $("updatedAt").textContent = "Oppdatert: " + (data.updated_at || "–");
+      $("price").textContent = fmtPrice(data?.gold?.price_usd);
+      $("change").textContent = "Endring: " + fmtPct(data?.gold?.change_pct);
+      const state = data?.signal?.state || "neutral";
+      $("signalText").textContent = "Signal: " + state;
+      $("signalPill").className = "pill " + pillClass(state);
+      $("reason").textContent = data?.signal?.reason_short || "–";
+      $("macro").textContent = data?.macro?.summary_short || "–";
+      $("status").textContent = "Status: OK";
+    }catch(e){
+      $("status").textContent = "Status: Feil: " + e;
+    }
+  }
+  $("btnReload").addEventListener("click", loadToday);
+  loadToday();
+</script>
+"""
+
+ARCHIVE_BODY_INNER = """
+<div class="wrap">
+  <header>
+    <div class="brand">__APP_NAME__ Arkiv</div>
+    <div class="nav">
+      <a href="/">Til analyse</a>
+      <a class="cta" href="/premium">Premium</a>
+    </div>
+  </header>
+
+  <div class="grid" style="grid-template-columns:1fr">
+    <div class="card">
+      <div style="font-size:18px;font-weight:900">Teaser (gratis)</div>
+      <div class="muted">Siste 3 snapshots. Full historikk ligger bak premium.</div>
+      <div id="teaserStatus" class="small" style="margin-top:10px"></div>
+      <table id="teaserTbl" style="display:none">
+        <thead><tr><th>Dato</th><th>Pris</th><th>Signal</th><th>7d</th><th>30d</th><th>Notat</th></tr></thead>
+        <tbody id="teaserBody"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <div style="font-size:18px;font-weight:900">Premium</div>
+      <div class="muted">Lim inn premium-nøkkel. Den lagres lokalt i nettleseren (localStorage).</div>
+
+      <div class="btnrow" style="margin-top:12px">
+        <input id="key" placeholder="Premium-nøkkel" autocomplete="off" />
+        <button class="cta" id="btnSave">Lagre</button>
+        <button id="btnClear">Fjern</button>
+        <button id="btnLoad">Last arkiv</button>
+      </div>
+
+      <div class="btnrow" style="margin-top:10px">
+        <input id="email" placeholder="E-post for varsel (premium)" autocomplete="email" />
+        <button id="btnEmail">Aktiver e-postvarsel</button>
+      </div>
+
+      <div class="btnrow" style="margin-top:12px">
+        <input id="payEmail" placeholder="E-post for kjøp (Stripe)" autocomplete="email" />
+        <button class="cta" id="btnPay">Kjøp premium</button>
+      </div>
+
+      <div id="status" class="small" style="margin-top:10px"></div>
+
+      <div class="card" style="margin-top:12px">
+        <div style="font-weight:900">Signalhistorikk (siste 30 signaler)</div>
+        <div class="small" id="statsBox" style="margin-top:8px">Laster…</div>
+      </div>
+
+      <table id="tbl" style="display:none">
+        <thead><tr><th>Dato</th><th>Pris</th><th>Signal</th><th>7d</th><th>30d</th><th>Notat</th></tr></thead>
+        <tbody id="body"></tbody>
+      </table>
+
+      <div class="small" style="margin-top:10px">
+        API: <code>/api/history</code> med header <code>x-api-key</code>.
       </div>
     </div>
   </div>
+
+  __FOOTER__
+</div>
 
 <script>
   const LS_KEY = "gullbrief_premium_key";
@@ -1867,7 +1987,6 @@ ARCHIVE_HTML = """<!doctype html>
       const data = await res.json();
       if(!res.ok){ setStatus(data?.message || ("HTTP "+res.status)); return; }
 
-      // stats
       const s = data.stats || {};
       const fmt = (x)=> (x==null ? "–" : (Number(x).toFixed(1) + " %"));
       $("statsBox").innerHTML = `
@@ -1954,8 +2073,6 @@ ARCHIVE_HTML = """<!doctype html>
   loadTeaser();
   if($("key").value.trim()){ loadArchive(); }
 </script>
-</body>
-</html>
 """
 
 SUCCESS_HTML = """<!doctype html>
@@ -2008,3 +2125,190 @@ SUCCESS_HTML = """<!doctype html>
 </body>
 </html>
 """
+
+
+# =============================================================================
+# Pages routes
+# =============================================================================
+
+@app.get("/analysis")
+def analysis_redirect():
+    return RedirectResponse(url="/", status_code=302)
+
+@app.get("/", response_class=HTMLResponse)
+def index(request: Request) -> HTMLResponse:
+    title = "Gullpris analyse – daglig gullbrief og markedssignal"
+    desc = "Daglig analyse av gullprisen: signal, trend, makro og nyheter. Premium gir arkiv, signalhistorikk og e-postvarsler."
+    body = _replace_many(
+        INDEX_BODY_TEMPLATE,
+        {
+            "__APP_NAME__": _escape_html(APP_NAME),
+            "__DESC__": _escape_html(desc),
+            "__FOOTER__": footer_links(),
+        },
+    )
+    return HTMLResponse(html_shell(request, title=title, description=desc, path="/", body_html=body))
+
+@app.get("/premium", response_class=HTMLResponse)
+def premium_page(request: Request) -> HTMLResponse:
+    title = "Gullbrief Premium – gullpris analyse, signalhistorikk og arkiv"
+    desc = "Premium: daglig rapport, signalhistorikk (siste 30), arkiv med 7d/30d etter signal, og e-postvarsler."
+    body = _replace_many(
+        PREMIUM_BODY_TEMPLATE,
+        {
+            "__APP_NAME__": _escape_html(APP_NAME),
+            "__FOOTER__": footer_links(),
+        },
+    )
+    return HTMLResponse(html_shell(request, title=title, description=desc, path="/premium", body_html=body))
+
+@app.get("/archive", response_class=HTMLResponse)
+def archive_page(request: Request) -> HTMLResponse:
+    title = "Gullbrief arkiv – signalhistorikk og avkastning etter signal"
+    desc = "Se siste snapshots gratis. Premium gir full historikk, signalhistorikk (siste 30) og 7d/30d etter signal."
+    body = _replace_many(
+        ARCHIVE_BODY_INNER,
+        {
+            "__APP_NAME__": _escape_html(APP_NAME),
+            "__FOOTER__": footer_links(),
+        },
+    )
+    return HTMLResponse(html_shell(request, title=title, description=desc, path="/archive", body_html=body))
+
+@app.get("/archive/{day}", response_class=HTMLResponse)
+def archive_day_page(request: Request, day: str) -> HTMLResponse:
+    # Public SEO landing for a specific day (no premium leak)
+    try:
+        date.fromisoformat(day)
+    except Exception:
+        return HTMLResponse(html_shell(
+            request,
+            title=f"{APP_NAME} – Arkiv",
+            description="Ugyldig dato.",
+            path=f"/archive/{_escape_html(day)}",
+            body_html="<div class='wrap'><div class='card'>Ugyldig dato.</div></div>",
+        ), status_code=404)
+
+    snap = load_snapshot_for_date(day)
+    if not snap:
+        return HTMLResponse(html_shell(
+            request,
+            title=f"{APP_NAME} – Arkiv {day}",
+            description="Ingen snapshot funnet for denne dagen ennå.",
+            path=f"/archive/{day}",
+            body_html="<div class='wrap'><div class='card'>Ingen snapshot funnet for denne dagen ennå.</div></div>",
+            article_date=day,
+        ), status_code=404)
+
+    sig = str(snap.get("signal") or "neutral").upper()
+    price = safe_float(snap.get("price_usd"))
+    chg = safe_float(snap.get("change_pct"))
+    macro = (snap.get("macro_summary") or "").strip()
+    reason = (snap.get("signal_reason") or "").strip()
+
+    bits = []
+    if price is not None:
+        bits.append(f"Pris: {price:.2f} USD")
+    if chg is not None:
+        bits.append(f"Døgn: {chg:+.2f}%")
+    header = " | ".join(bits) if bits else "Nøkkeltall: –"
+
+    inner = """
+    <div class="wrap">
+      <header>
+        <div class="brand">__APP_NAME__</div>
+        <div class="nav">
+          <a href="/">Analyse</a>
+          <a href="/archive">Arkiv</a>
+          <a class="cta" href="/premium">Premium</a>
+        </div>
+      </header>
+      <section class="hero">
+        <h1>Arkiv: __DAY__</h1>
+        <p>Nøkkelpunkter fra dagens snapshot. Full historikk og statistikk: Premium.</p>
+      </section>
+      <section class="grid" style="grid-template-columns:1fr">
+        <div class="card">
+          <div class="title"><h2>Dagens snapshot</h2><div class="muted">__HEADER__</div></div>
+          <div class="big">Signal: __SIG__</div>
+          <p class="muted" style="margin-top:10px">__REASON__</p>
+          <h2 style="margin-top:14px">Kort makro</h2>
+          <p class="muted">__MACRO__</p>
+          <div class="btnrow">
+            <button onclick="location.href='/archive'">Åpne arkiv</button>
+            <button class="cta" onclick="location.href='/premium'">Premium</button>
+          </div>
+        </div>
+      </section>
+      __FOOTER__
+    </div>
+    """
+    body = _replace_many(inner, {
+        "__APP_NAME__": _escape_html(APP_NAME),
+        "__DAY__": _escape_html(day),
+        "__SIG__": _escape_html(sig),
+        "__HEADER__": _escape_html(header),
+        "__REASON__": _escape_html(reason or "—"),
+        "__MACRO__": _escape_html(macro or "—"),
+        "__FOOTER__": footer_links(),
+    })
+
+    title = f"{APP_NAME} arkiv {day} – {sig}"
+    desc = f"{APP_NAME} snapshot {day}: {sig}. {header}. Kort makro og forklaring."
+    return HTMLResponse(html_shell(request, title=title, description=desc, path=f"/archive/{day}", body_html=body, article_date=day))
+
+def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, intro: str) -> HTMLResponse:
+    body = _replace_many(
+        SEO_LANDING_TEMPLATE,
+        {
+            "__APP_NAME__": _escape_html(APP_NAME),
+            "__H1__": _escape_html(h1),
+            "__INTRO__": _escape_html(intro),
+            "__FOOTER__": footer_links(),
+        },
+    )
+    return HTMLResponse(html_shell(request, title=title, description=desc, path=path, body_html=body))
+
+@app.get("/gullpris", response_class=HTMLResponse)
+def page_gullpris(request: Request) -> HTMLResponse:
+    return seo_landing(
+        request,
+        path="/gullpris",
+        title="Gullpris i dag – pris, signal og kort analyse",
+        desc="Se gullpris i dag (USD), signal og kort makro. Oppdatert daglig. Premium gir arkiv og signalhistorikk.",
+        h1="Gullpris i dag",
+        intro="Pris, signal og kort kontekst. Oppdatert daglig. For historikk og treffsikkerhet: Premium.",
+    )
+
+@app.get("/gullpris-analyse", response_class=HTMLResponse)
+def page_gullpris_analyse(request: Request) -> HTMLResponse:
+    return seo_landing(
+        request,
+        path="/gullpris-analyse",
+        title="Gullpris analyse – daglig signal og makro",
+        desc="Daglig gullpris analyse: signal, trend og makrodrivere. Se dagens status og oppdateringer.",
+        h1="Gullpris analyse",
+        intro="Nøktern daglig analyse av gull. Fokus på trend, signal og makro.",
+    )
+
+@app.get("/xauusd", response_class=HTMLResponse)
+def page_xauusd(request: Request) -> HTMLResponse:
+    return seo_landing(
+        request,
+        path="/xauusd",
+        title="XAUUSD – gull mot dollar: signal og analyse",
+        desc="XAUUSD (gull mot USD): daglig signal, trend og kort makro. Premium gir arkiv og signalhistorikk.",
+        h1="XAUUSD",
+        intro="Gull mot USD: pris, signal og korte drivere. Oppdatert daglig.",
+    )
+
+@app.get("/gullpris-signal", response_class=HTMLResponse)
+def page_gullpris_signal(request: Request) -> HTMLResponse:
+    return seo_landing(
+        request,
+        path="/gullpris-signal",
+        title="Gullpris signal – bullish/bearish og treffsikkerhet",
+        desc="Gullpris signal (bullish/bearish/neutral) og forklaring. Premium viser signalhistorikk og 7d/30d etter signal.",
+        h1="Gullpris signal",
+        intro="Se dagens signal og hvorfor det er satt. Premium viser historikk, 7d/30d og treffsikkerhet (siste 30).",
+    )
