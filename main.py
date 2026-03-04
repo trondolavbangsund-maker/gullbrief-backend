@@ -2172,7 +2172,20 @@ def archive_page(request: Request) -> HTMLResponse:
 
     # ✅ HTML “arkivkart” for crawling
     dates = get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)
-    links = []
+
+# hvis historikk er tom på serveren, lag ett snapshot
+if not dates:
+    try:
+        raw = get_cached_brief(force_refresh=True)
+        try:
+            store_snapshot_if_needed(raw)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    dates = get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)
+
+links = []
     for d in dates[:60]:
         links.append(f'<li><a href="/archive/{_escape_html(d)}">Arkiv { _escape_html(d) }</a></li>')
     archive_map_html = (
