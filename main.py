@@ -24,6 +24,7 @@ from fastapi import FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
+
 # =============================================================================
 # Config
 # =============================================================================
@@ -31,7 +32,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip()
 
-YAHOO_SYMBOL = os.getenv("YAHOO_SYMBOL", "GC=F").strip()  # Gold futures
+YAHOO_SYMBOL = os.getenv("YAHOO_SYMBOL", "GC=F").strip()
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "900"))
 
 RSS_FEEDS_ENV = os.getenv("RSS_FEEDS", "https://www.fxstreet.com/rss/news")
@@ -39,11 +40,10 @@ RSS_FEEDS = [u.strip() for u in RSS_FEEDS_ENV.split(",") if u.strip()]
 
 HISTORY_PATH = os.getenv("HISTORY_PATH", "data/history.jsonl").strip()
 
-# Admin/dev key (alltid gyldig). Bytt i Render env.
+# Admin/dev key (alltid gyldig). Sett i Render env (PREMIUM_API_KEY).
 ADMIN_API_KEY = os.getenv("PREMIUM_API_KEY", "gullbrief-dev").strip()
 
 DB_PATH = os.getenv("DB_PATH", "data/app.db").strip()
-
 ALERT_BASE_URL = os.getenv("ALERT_BASE_URL", "http://127.0.0.1:8000").strip()
 
 # Brevo Transactional API
@@ -51,15 +51,16 @@ BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
 SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "").strip()
 SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "Gullbrief").strip()
 
-# Stripe default URLs (read dynamically too)
+# Stripe defaults (read dynamically too)
 STRIPE_SUCCESS_URL_DEFAULT = os.getenv("STRIPE_SUCCESS_URL", "http://127.0.0.1:8000/success").strip()
 STRIPE_CANCEL_URL_DEFAULT = os.getenv("STRIPE_CANCEL_URL", "http://127.0.0.1:8000/archive").strip()
+
 
 # =============================================================================
 # App + CORS
 # =============================================================================
 
-app = FastAPI(title="Gullbrief Research", version="1.9")
+app = FastAPI(title="Gullbrief Research", version="2.0")
 
 origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
@@ -72,10 +73,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # =============================================================================
 # Utils
 # =============================================================================
-
 
 def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -121,7 +122,6 @@ def http_get_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: i
 # Stripe helpers (read env dynamically)
 # =============================================================================
 
-
 def stripe_env() -> Dict[str, str]:
     sk = os.getenv("STRIPE_SECRET_KEY", "").strip()
     price = os.getenv("STRIPE_PRICE_ID", "").strip()
@@ -154,7 +154,6 @@ def require_stripe() -> Dict[str, str]:
 # DB (SQLite)
 # =============================================================================
 
-
 def _db() -> sqlite3.Connection:
     p = pathlib.Path(DB_PATH)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -167,8 +166,7 @@ def init_db() -> None:
     conn = _db()
     cur = conn.cursor()
 
-    cur.execute(
-        """
+    cur.execute("""
       CREATE TABLE IF NOT EXISTS api_keys (
         api_key TEXT PRIMARY KEY,
         email TEXT,
@@ -177,31 +175,27 @@ def init_db() -> None:
         stripe_customer_id TEXT,
         stripe_subscription_id TEXT
       )
-    """
-    )
+    """)
 
-    cur.execute(
-        """
+    cur.execute("""
       CREATE TABLE IF NOT EXISTS email_subscriptions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         api_key TEXT NOT NULL,
         email TEXT NOT NULL,
         created_at TEXT NOT NULL,
         last_notified_signal TEXT,
+        last_daily_sent_date TEXT,
         UNIQUE(api_key, email)
       )
-    """
-    )
+    """)
 
-    cur.execute(
-        """
+    cur.execute("""
       CREATE TABLE IF NOT EXISTS stripe_events (
         event_id TEXT PRIMARY KEY,
         event_type TEXT,
         created_at TEXT NOT NULL
       )
-    """
-    )
+    """)
 
     conn.commit()
     conn.close()
@@ -275,9 +269,8 @@ def _mark_processed(event_id: str, event_type: str) -> None:
 
 
 # =============================================================================
-# Yahoo Finance
+# Yahoo Finance + indicators
 # =============================================================================
-
 
 @dataclass
 class YahooPrice:
@@ -290,7 +283,7 @@ class YahooPrice:
 
 
 def fetch_yahoo_chart(symbol: str, range_: str, interval: str) -> Dict[str, Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/1.9)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/2.0)"}
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
     return http_get_json(url, headers=headers)
 
@@ -325,26 +318,58 @@ def sma(values: List[float], n: int) -> Optional[float]:
     return sum(values[-n:]) / n
 
 
+def rsi(values: List[float], period: int = 14) -> Optional[float]:
+    if len(values) < period + 1:
+        return None
+    gains = 0.0
+    losses = 0.0
+    for i in range(-period, 0):
+        diff = values[i] - values[i - 1]
+        if diff >= 0:
+            gains += diff
+        else:
+            losses += -diff
+    if gains == 0 and losses == 0:
+        return 50.0
+    if losses == 0:
+        return 100.0
+    rs = gains / losses
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def trend_score_from_mas(last: float, s20: Optional[float], s50: Optional[float]) -> Optional[int]:
+    if s20 is None or s50 is None:
+        return None
+    score = 50
+    score += 15 if last > s20 else -15
+    score += 20 if s20 > s50 else -20
+    return max(0, min(100, int(score)))
+
+
 def compute_signal(symbol: str) -> Tuple[str, Dict[str, Any]]:
     chart = fetch_yahoo_chart(symbol, range_="3mo", interval="1d")
     closes = extract_closes(chart)
     if len(closes) < 55:
-        return "neutral", {"reason": "For lite historikk til SMA20/SMA50. Setter nøytral."}
+        return "neutral", {"reason": "For lite historikk til SMA20/SMA50. Setter nøytral.", "rsi14": None, "trend_score": None}
+
     last = closes[-1]
     s20, s50 = sma(closes, 20), sma(closes, 50)
+    rsi14 = rsi(closes, 14)
+    tscore = trend_score_from_mas(last, s20, s50)
+
     if s20 is None or s50 is None:
-        return "neutral", {"reason": "Kunne ikke beregne glidende snitt."}
+        return "neutral", {"reason": "Kunne ikke beregne glidende snitt.", "rsi14": rsi14, "trend_score": tscore}
+
     if last > s20 > s50:
-        return "bullish", {"reason": "Pris over SMA20 og SMA50, med positiv trend."}
+        return "bullish", {"reason": "Pris over SMA20 og SMA50, med positiv trend.", "rsi14": rsi14, "trend_score": tscore}
     if last < s20 < s50:
-        return "bearish", {"reason": "Pris under SMA20 og SMA50, med negativ trend."}
-    return "neutral", {"reason": "Blandet bilde mellom pris og glidende snitt."}
+        return "bearish", {"reason": "Pris under SMA20 og SMA50, med negativ trend.", "rsi14": rsi14, "trend_score": tscore}
+    return "neutral", {"reason": "Blandet bilde mellom pris og glidende snitt.", "rsi14": rsi14, "trend_score": tscore}
 
 
 # =============================================================================
 # RSS headlines
 # =============================================================================
-
 
 def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
     items: List[Dict[str, str]] = []
@@ -370,7 +395,7 @@ def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
 def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/1.9)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/2.0)"}
     all_items: List[Dict[str, str]] = []
     for feed_url in RSS_FEEDS:
         try:
@@ -391,9 +416,8 @@ def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
 
 
 # =============================================================================
-# OpenAI summary (optional)
+# OpenAI summaries (optional)
 # =============================================================================
-
 
 def summarize_with_openai(headlines: List[Dict[str, str]], signal_state: str, signal_reason: str) -> str:
     if not headlines or not OPENAI_API_KEY:
@@ -410,7 +434,6 @@ def summarize_with_openai(headlines: List[Dict[str, str]], signal_state: str, si
     )
     try:
         from openai import OpenAI  # type: ignore
-
         client = OpenAI(api_key=OPENAI_API_KEY)
         resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
         return (resp.output_text or "").strip()
@@ -418,10 +441,87 @@ def summarize_with_openai(headlines: List[Dict[str, str]], signal_state: str, si
         return ""
 
 
+def premium_report_ai(
+    headlines: List[Dict[str, str]],
+    signal_state: str,
+    signal_reason: str,
+    price_usd: Optional[float],
+    change_pct: Optional[float],
+    rsi14: Optional[float],
+    trend_score: Optional[int],
+) -> str:
+    titles = [h.get("title", "").strip() for h in headlines if h.get("title")][:12]
+    if not titles:
+        titles = ["(Ingen nyhetsoverskrifter tilgjengelig)"]
+
+    # Fallback uten OpenAI: helt ok for “minste mulig drift”
+    if not OPENAI_API_KEY:
+        bits = []
+        if isinstance(price_usd, (int, float)):
+            bits.append(f"Pris: {price_usd:.2f} USD")
+        if isinstance(change_pct, (int, float)):
+            bits.append(f"Døgnendring: {change_pct:+.2f}%")
+        if isinstance(rsi14, (int, float)):
+            bits.append(f"RSI(14): {rsi14:.1f}")
+        if isinstance(trend_score, int):
+            bits.append(f"Trend score: {trend_score}/100")
+        header = " | ".join(bits) if bits else "Dagens nøkkeltall: (ukjent)"
+        return (
+            f"Gullbrief Premium ({datetime.now(timezone.utc).date().isoformat()})\n"
+            f"{header}\n"
+            f"Signal: {signal_state.upper()} ({signal_reason})\n\n"
+            "Nyhetsdriver (utdrag):\n- " + "\n- ".join(titles[:6]) + "\n\n"
+            "Hva kan endre bildet (24–72t):\n"
+            "- USD/renter beveger seg raskt\n"
+            "- Inflasjon-/vekstdata overrasker\n"
+            "- Geopolitikk/risikoappetitt skifter\n"
+        )
+
+    price_line = f"Pris: {price_usd:.2f} USD" if isinstance(price_usd, (int, float)) else "Pris: (ukjent)"
+    chg_line = f"Døgnendring: {change_pct:+.2f}%" if isinstance(change_pct, (int, float)) else "Døgnendring: (ukjent)"
+    rsi_line = f"RSI(14): {rsi14:.1f}" if isinstance(rsi14, (int, float)) else "RSI(14): (ukjent)"
+    ts_line = f"Trend score: {trend_score}/100" if isinstance(trend_score, int) else "Trend score: (ukjent)"
+
+    prompt = (
+        "Du er Gullbrief Premium. Skriv en daglig makrokommentar om gull (GC=F) på norsk.\n"
+        "Krav:\n"
+        "- 10–16 linjer, korte avsnitt, svært nøkternt.\n"
+        "- Fokus på makro: renter, USD, inflasjon, vekst, geopolitikk, posisjonering.\n"
+        "- Ikke investeringsråd. Ikke oppfordring til kjøp/salg.\n"
+        "- Ikke bruk emojis.\n"
+        "- Avslutt med 'Hva kan endre bildet (24–72t)' med 3 punkt.\n\n"
+        f"{price_line}\n{chg_line}\n{rsi_line}\n{ts_line}\n"
+        f"Signal: {signal_state.upper()}\n"
+        f"Indikator-årsak: {signal_reason}\n\n"
+        "Nyhetsoverskrifter:\n- " + "\n- ".join(titles) + "\n\n"
+        "Svarformat:\n"
+        "Tittel: (1 linje)\n"
+        "Makro: (6–10 linjer)\n"
+        "Hva kan endre bildet (24–72t):\n"
+        "- ...\n- ...\n- ...\n"
+    )
+
+    try:
+        from openai import OpenAI  # type: ignore
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
+        return (resp.output_text or "").strip()
+    except Exception:
+        # fall tilbake til non-AI format hvis OpenAI feiler midlertidig
+        return premium_report_ai(
+            headlines=headlines,
+            signal_state=signal_state,
+            signal_reason=signal_reason,
+            price_usd=price_usd,
+            change_pct=change_pct,
+            rsi14=rsi14,
+            trend_score=trend_score,
+        )
+
+
 # =============================================================================
 # Cache + brief
 # =============================================================================
-
 
 @dataclass
 class CacheState:
@@ -436,6 +536,9 @@ def build_brief() -> Dict[str, Any]:
     yp = fetch_yahoo_price(YAHOO_SYMBOL)
     signal_state, sig_meta = compute_signal(YAHOO_SYMBOL)
     signal_reason = sig_meta.get("reason", "")
+    rsi14v = safe_float(sig_meta.get("rsi14"))
+    tscore = sig_meta.get("trend_score") if isinstance(sig_meta.get("trend_score"), int) else None
+
     headlines = fetch_headlines(limit=10)
 
     macro_ai = summarize_with_openai(headlines, signal_state, signal_reason)
@@ -443,13 +546,15 @@ def build_brief() -> Dict[str, Any]:
 
     return {
         "updated_at": yp.ts,
-        "version": "1.1",
+        "version": "2.0",
         "symbol": yp.symbol,
         "currency": yp.currency,
         "price_usd": yp.last,
         "change_pct": yp.change_pct,
         "signal": signal_state,
         "signal_reason": signal_reason,
+        "rsi14": rsi14v,
+        "trend_score": tscore,
         "macro_summary": macro_summary,
         "headlines": headlines,
     }
@@ -472,7 +577,7 @@ def get_cached_brief(force_refresh: bool) -> Dict[str, Any]:
 def map_to_public_today(data: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "1.1"),
+        "version": data.get("version", "2.0"),
         "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
         "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
         "macro": {"summary_short": data.get("macro_summary", "")},
@@ -483,7 +588,6 @@ def map_to_public_today(data: Dict[str, Any]) -> Dict[str, Any]:
 # =============================================================================
 # History (JSONL)
 # =============================================================================
-
 
 def _ensure_history_dir() -> pathlib.Path:
     p = pathlib.Path(HISTORY_PATH)
@@ -536,17 +640,32 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
     last = _read_last_snapshot()
     if not _should_store_snapshot(data, last):
         return False
+
+    premium_report = premium_report_ai(
+        headlines=data.get("headlines", []),
+        signal_state=str(data.get("signal") or "neutral"),
+        signal_reason=str(data.get("signal_reason") or ""),
+        price_usd=safe_float(data.get("price_usd")),
+        change_pct=safe_float(data.get("change_pct")),
+        rsi14=safe_float(data.get("rsi14")),
+        trend_score=data.get("trend_score") if isinstance(data.get("trend_score"), int) else None,
+    )
+
     rec = {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "1.1"),
+        "version": data.get("version", "2.0"),
         "symbol": data.get("symbol"),
         "price_usd": data.get("price_usd"),
         "change_pct": data.get("change_pct"),
         "signal": data.get("signal"),
         "signal_reason": data.get("signal_reason", ""),
+        "rsi14": data.get("rsi14"),
+        "trend_score": data.get("trend_score"),
         "macro_summary": data.get("macro_summary", ""),
+        "premium_report": premium_report or "",
         "headlines": data.get("headlines", []),
     }
+
     with p.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     return True
@@ -594,9 +713,8 @@ def latest_signal() -> str:
 
 
 # =============================================================================
-# Email alerts (Brevo)
+# Email (Brevo)
 # =============================================================================
-
 
 def brevo_configured() -> bool:
     return bool(BREVO_API_KEY and SMTP_FROM_EMAIL)
@@ -632,7 +750,6 @@ def send_email(to_email: str, subject: str, body: str) -> None:
 # Routes
 # =============================================================================
 
-
 @app.get("/health")
 def health() -> Dict[str, Any]:
     e = stripe_env()
@@ -651,7 +768,7 @@ def health() -> Dict[str, Any]:
         "stripe_price_id_prefix": (e["price_id"][:10] + "...") if e["price_id"] else "",
         "stripe_webhook_secret_set": bool(e["webhook_secret"]),
         "brevo_enabled": brevo_configured(),
-        "version": "1.9",
+        "version": "2.0",
     }
 
 
@@ -700,17 +817,15 @@ def api_teaser_history():
     items = rows[-3:]
     out = []
     for r in reversed(items):
-        out.append(
-            {
-                "updated_at": r.get("updated_at"),
-                "symbol": r.get("symbol"),
-                "price_usd": r.get("price_usd"),
-                "signal": r.get("signal"),
-                "macro_summary": (r.get("macro_summary") or "")[:120],
-                "return_7d_pct": r.get("return_7d_pct"),
-                "return_30d_pct": r.get("return_30d_pct"),
-            }
-        )
+        out.append({
+            "updated_at": r.get("updated_at"),
+            "symbol": r.get("symbol"),
+            "price_usd": r.get("price_usd"),
+            "signal": r.get("signal"),
+            "macro_summary": (r.get("macro_summary") or "")[:120],
+            "return_7d_pct": r.get("return_7d_pct"),
+            "return_30d_pct": r.get("return_30d_pct"),
+        })
     return {"count": len(out), "items": out}
 
 
@@ -723,10 +838,35 @@ def api_history(limit: int = 200, x_api_key: str | None = Header(default=None)):
     return {"count": len(rows), "items": rows}
 
 
+@app.get("/api/premium/report/today")
+def api_premium_report_today(x_api_key: str | None = Header(default=None)):
+    if not is_valid_key(x_api_key):
+        return JSONResponse(status_code=401, content={"error": "PREMIUM_REQUIRED", "message": "Premium kreves."})
+
+    last = _read_last_snapshot() or {}
+    rep = (last.get("premium_report") or "").strip()
+    if rep:
+        return {"updated_at": last.get("updated_at") or iso_now(), "report": rep}
+
+    # fallback: generer on-demand
+    raw = get_cached_brief(force_refresh=False)
+    rep2 = premium_report_ai(
+        headlines=raw.get("headlines", []),
+        signal_state=str(raw.get("signal") or "neutral"),
+        signal_reason=str(raw.get("signal_reason") or ""),
+        price_usd=safe_float(raw.get("price_usd")),
+        change_pct=safe_float(raw.get("change_pct")),
+        rsi14=safe_float(raw.get("rsi14")),
+        trend_score=raw.get("trend_score") if isinstance(raw.get("trend_score"), int) else None,
+    )
+    return {"updated_at": iso_now(), "report": rep2 or ""}
+
+
 @app.post("/api/premium/subscribe-email")
 async def api_subscribe_email(req: Request, x_api_key: str | None = Header(default=None)):
     if not is_valid_key(x_api_key):
         return JSONResponse(status_code=401, content={"error": "PREMIUM_REQUIRED", "message": "Premium kreves."})
+
     body = await req.json()
     email = (body.get("email") or "").strip().lower()
     if "@" not in email:
@@ -734,8 +874,8 @@ async def api_subscribe_email(req: Request, x_api_key: str | None = Header(defau
 
     conn = _db()
     conn.execute(
-        "INSERT OR IGNORE INTO email_subscriptions(api_key,email,created_at,last_notified_signal) VALUES(?,?,?,?)",
-        (x_api_key, email, iso_now(), None),
+        "INSERT OR IGNORE INTO email_subscriptions(api_key,email,created_at,last_notified_signal,last_daily_sent_date) VALUES(?,?,?,?,?)",
+        (x_api_key, email, iso_now(), None, None),
     )
     conn.commit()
     conn.close()
@@ -744,13 +884,11 @@ async def api_subscribe_email(req: Request, x_api_key: str | None = Header(defau
 
 # --- Admin tasks (manual trigger / cron)
 
-
 @app.get("/api/tasks/check-signal")
 def api_check_signal(admin_key: str = ""):
     if admin_key != ADMIN_API_KEY:
         return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED", "message": "admin_key feil."})
 
-    # Refresh brief + history snapshot
     try:
         get_cached_brief(force_refresh=True)
     except Exception:
@@ -768,6 +906,10 @@ def api_check_signal(admin_key: str = ""):
     sent = 0
 
     for row in rows:
+        # kun aktive premium keys
+        if not is_valid_key(row["api_key"]):
+            continue
+
         last_sig = (row["last_notified_signal"] or "").lower()
         if last_sig == sig:
             continue
@@ -786,11 +928,76 @@ def api_check_signal(admin_key: str = ""):
             conn.commit()
             sent += 1
         except Exception:
-            # Best-effort: ikke stopp hele jobben
             continue
 
     conn.close()
     return {"ok": True, "sent": sent, "signal": sig}
+
+
+@app.get("/api/tasks/send-daily-premium")
+def api_send_daily_premium(admin_key: str = ""):
+    if admin_key != ADMIN_API_KEY:
+        return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED", "message": "admin_key feil."})
+
+    if not brevo_configured():
+        return JSONResponse(status_code=500, content={"error": "BREVO_NOT_CONFIGURED"})
+
+    try:
+        get_cached_brief(force_refresh=True)
+    except Exception:
+        pass
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    last = _read_last_snapshot() or {}
+
+    sig = ((last.get("signal") or "neutral").upper())
+    price = safe_float(last.get("price_usd"))
+    chg = safe_float(last.get("change_pct"))
+    rsi14v = safe_float(last.get("rsi14"))
+    tscore = last.get("trend_score") if isinstance(last.get("trend_score"), int) else None
+    rep = (last.get("premium_report") or "").strip()
+
+    subject = f"Gullbrief Premium ({today}) – {sig}"
+
+    header_bits = []
+    if price is not None:
+        header_bits.append(f"Pris: {price:.2f} USD")
+    if chg is not None:
+        header_bits.append(f"Døgnendring: {chg:+.2f}%")
+    if rsi14v is not None:
+        header_bits.append(f"RSI(14): {rsi14v:.1f}")
+    if tscore is not None:
+        header_bits.append(f"Trend score: {tscore}/100")
+
+    body = (
+        "Gullbrief Premium – daglig kommentar\n"
+        + ((" | ".join(header_bits)) + "\n\n" if header_bits else "\n")
+        + (rep + "\n\n" if rep else "Premium-rapport ikke tilgjengelig i dag.\n\n")
+        + f"Arkiv: {ALERT_BASE_URL}/archive\n"
+        + "(Automatisk utsendelse.)\n"
+    )
+
+    conn = _db()
+    rows = conn.execute("SELECT id, api_key, email, last_daily_sent_date FROM email_subscriptions").fetchall()
+    sent = 0
+
+    for row in rows:
+        if not is_valid_key(row["api_key"]):
+            continue
+
+        if (row["last_daily_sent_date"] or "") == today:
+            continue
+
+        try:
+            send_email(row["email"], subject, body)
+            conn.execute("UPDATE email_subscriptions SET last_daily_sent_date=? WHERE id=?", (today, row["id"]))
+            conn.commit()
+            sent += 1
+        except Exception:
+            continue
+
+    conn.close()
+    return {"ok": True, "sent": sent, "date": today}
 
 
 @app.post("/api/tasks/send-test-email")
@@ -823,7 +1030,6 @@ async def api_send_test_email(req: Request, admin_key: str = ""):
 
 @app.get("/api/tasks/tcp-ping")
 def tcp_ping(host: str = "", port: int = 443, admin_key: str = ""):
-    # Tiny debugging helper (optional)
     if admin_key != ADMIN_API_KEY:
         return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED", "message": "admin_key feil."})
     if not host:
@@ -836,7 +1042,6 @@ def tcp_ping(host: str = "", port: int = 443, admin_key: str = ""):
 
 
 # --- Stripe: opprett checkout-session
-
 
 @app.post("/api/stripe/create-checkout")
 async def api_stripe_create_checkout(req: Request):
@@ -867,14 +1072,12 @@ async def api_stripe_create_checkout(req: Request):
 
 # --- Success-side page
 
-
 @app.get("/success", response_class=HTMLResponse)
 def success_page(session_id: str = ""):
     return HTMLResponse(SUCCESS_HTML.replace("__SESSION_ID__", session_id or ""))
 
 
 # --- Claim key (polling)
-
 
 @app.get("/api/stripe/claim-key")
 def api_stripe_claim_key(session_id: str = ""):
@@ -914,7 +1117,6 @@ def api_stripe_claim_key(session_id: str = ""):
 
 
 # --- Stripe webhook (source of truth)
-
 
 @app.post("/api/stripe/webhook")
 async def stripe_webhook(request: Request):
@@ -994,7 +1196,6 @@ async def stripe_webhook(request: Request):
 # Pages (UI)
 # =============================================================================
 
-
 @app.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
     return HTMLResponse(INDEX_HTML)
@@ -1006,7 +1207,7 @@ def archive() -> HTMLResponse:
 
 
 # =============================================================================
-# HTML templates
+# HTML templates (samme som før)
 # =============================================================================
 
 INDEX_HTML = """<!doctype html>
@@ -1316,7 +1517,7 @@ ARCHIVE_HTML = """<!doctype html>
       });
       const data = await res.json();
       if(!res.ok){ setStatus(data?.message || ("HTTP "+res.status)); return; }
-      setStatus("E-postvarsel aktivert ✅ (sendes ved signalendring)");
+      setStatus("E-postvarsel aktivert ✅ (sendes ved signalendring + daglig premium)");
     }catch(e){
       setStatus("Feil: " + e);
     }
