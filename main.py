@@ -2192,7 +2192,7 @@ def archive_page(request: Request) -> HTMLResponse:
     )
 
     # Legg arkivkartet etter første card (enkelt og trygt)
-    body = body.replace("</div>\n\n    <div class=\"card\">", f"</div>{archive_map_html}\n\n    <div class=\"card\">", 1)
+    body = archive_map_html + body
 
     return HTMLResponse(html_shell(request, title=title, description=desc, path="/archive", body_html=body))
 
