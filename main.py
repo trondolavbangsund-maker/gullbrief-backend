@@ -2170,24 +2170,25 @@ def archive_page(request: Request) -> HTMLResponse:
     title = "Gullbrief arkiv – signalhistorikk og avkastning etter signal"
     desc = "Se siste snapshots gratis. Premium gir full historikk, signalhistorikk (siste 30) og 7d/30d etter signal."
 
-    # ✅ HTML “arkivkart” for crawling
+    # HTML "arkivkart" for crawling
     dates = get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)
 
-# hvis historikk er tom på serveren, lag ett snapshot
-if not dates:
-    try:
-        raw = get_cached_brief(force_refresh=True)
+    # hvis historikk er tom på serveren, lag ett snapshot
+    if not dates:
         try:
-            store_snapshot_if_needed(raw)
+            raw = get_cached_brief(force_refresh=True)
+            try:
+                store_snapshot_if_needed(raw)
+            except Exception:
+                pass
         except Exception:
             pass
-    except Exception:
-        pass
-    dates = get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)
 
-links = []
+        dates = get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)
+    links = []
     for d in dates[:60]:
-        links.append(f'<li><a href="/archive/{_escape_html(d)}">Arkiv { _escape_html(d) }</a></li>')
+        links.append(f'<li><a href="/archive/{_escape_html(d)}">Arkiv {_escape_html(d)}</a></li>')
+
     archive_map_html = (
         "<div class='card' style='margin-top:12px'>"
         "<div style='font-size:18px;font-weight:900'>Arkivkart (for crawling)</div>"
