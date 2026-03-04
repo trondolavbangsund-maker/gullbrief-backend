@@ -60,7 +60,7 @@ STRIPE_CANCEL_URL_DEFAULT = os.getenv("STRIPE_CANCEL_URL", "http://127.0.0.1:800
 # App + CORS
 # =============================================================================
 
-app = FastAPI(title="Gullbrief Research", version="2.1")
+app = FastAPI(title="Gullbrief Research", version="2.2")
 
 origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
@@ -283,7 +283,7 @@ class YahooPrice:
 
 
 def fetch_yahoo_chart(symbol: str, range_: str, interval: str) -> Dict[str, Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/2.1)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/2.2)"}
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
     return http_get_json(url, headers=headers)
 
@@ -354,17 +354,17 @@ def compute_signal(symbol: str) -> Tuple[str, Dict[str, Any]]:
 
     last = closes[-1]
     s20, s50 = sma(closes, 20), sma(closes, 50)
-    rsi14 = rsi(closes, 14)
+    rsi14v = rsi(closes, 14)
     tscore = trend_score_from_mas(last, s20, s50)
 
     if s20 is None or s50 is None:
-        return "neutral", {"reason": "Kunne ikke beregne glidende snitt.", "rsi14": rsi14, "trend_score": tscore}
+        return "neutral", {"reason": "Kunne ikke beregne glidende snitt.", "rsi14": rsi14v, "trend_score": tscore}
 
     if last > s20 > s50:
-        return "bullish", {"reason": "Pris over SMA20 og SMA50, med positiv trend.", "rsi14": rsi14, "trend_score": tscore}
+        return "bullish", {"reason": "Pris over SMA20 og SMA50, med positiv trend.", "rsi14": rsi14v, "trend_score": tscore}
     if last < s20 < s50:
-        return "bearish", {"reason": "Pris under SMA20 og SMA50, med negativ trend.", "rsi14": rsi14, "trend_score": tscore}
-    return "neutral", {"reason": "Blandet bilde mellom pris og glidende snitt.", "rsi14": rsi14, "trend_score": tscore}
+        return "bearish", {"reason": "Pris under SMA20 og SMA50, med negativ trend.", "rsi14": rsi14v, "trend_score": tscore}
+    return "neutral", {"reason": "Blandet bilde mellom pris og glidende snitt.", "rsi14": rsi14v, "trend_score": tscore}
 
 
 # =============================================================================
@@ -395,7 +395,7 @@ def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
 def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/2.1)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/2.2)"}
     all_items: List[Dict[str, str]] = []
     for feed_url in RSS_FEEDS:
         try:
@@ -447,21 +447,22 @@ def premium_report_ai(
     signal_reason: str,
     price_usd: Optional[float],
     change_pct: Optional[float],
-    rsi14: Optional[float],
+    rsi14v: Optional[float],
     trend_score: Optional[int],
 ) -> str:
     titles = [h.get("title", "").strip() for h in headlines if h.get("title")][:12]
     if not titles:
         titles = ["(Ingen nyhetsoverskrifter tilgjengelig)"]
 
+    # Fallback uten OpenAI
     if not OPENAI_API_KEY:
         bits = []
         if isinstance(price_usd, (int, float)):
             bits.append(f"Pris: {price_usd:.2f} USD")
         if isinstance(change_pct, (int, float)):
             bits.append(f"Døgnendring: {change_pct:+.2f}%")
-        if isinstance(rsi14, (int, float)):
-            bits.append(f"RSI(14): {rsi14:.1f}")
+        if isinstance(rsi14v, (int, float)):
+            bits.append(f"RSI(14): {rsi14v:.1f}")
         if isinstance(trend_score, int):
             bits.append(f"Trend score: {trend_score}/100")
         header = " | ".join(bits) if bits else "Dagens nøkkeltall: (ukjent)"
@@ -478,7 +479,7 @@ def premium_report_ai(
 
     price_line = f"Pris: {price_usd:.2f} USD" if isinstance(price_usd, (int, float)) else "Pris: (ukjent)"
     chg_line = f"Døgnendring: {change_pct:+.2f}%" if isinstance(change_pct, (int, float)) else "Døgnendring: (ukjent)"
-    rsi_line = f"RSI(14): {rsi14:.1f}" if isinstance(rsi14, (int, float)) else "RSI(14): (ukjent)"
+    rsi_line = f"RSI(14): {rsi14v:.1f}" if isinstance(rsi14v, (int, float)) else "RSI(14): (ukjent)"
     ts_line = f"Trend score: {trend_score}/100" if isinstance(trend_score, int) else "Trend score: (ukjent)"
 
     prompt = (
@@ -506,13 +507,14 @@ def premium_report_ai(
         resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
         return (resp.output_text or "").strip()
     except Exception:
+        # fall tilbake
         return premium_report_ai(
             headlines=headlines,
             signal_state=signal_state,
             signal_reason=signal_reason,
             price_usd=price_usd,
             change_pct=change_pct,
-            rsi14=rsi14,
+            rsi14v=rsi14v,
             trend_score=trend_score,
         )
 
@@ -544,7 +546,7 @@ def build_brief() -> Dict[str, Any]:
 
     return {
         "updated_at": yp.ts,
-        "version": "2.1",
+        "version": "2.2",
         "symbol": yp.symbol,
         "currency": yp.currency,
         "price_usd": yp.last,
@@ -575,7 +577,7 @@ def get_cached_brief(force_refresh: bool) -> Dict[str, Any]:
 def map_to_public_today(data: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "2.1"),
+        "version": data.get("version", "2.2"),
         "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
         "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
         "macro": {"summary_short": data.get("macro_summary", "")},
@@ -645,13 +647,13 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
         signal_reason=str(data.get("signal_reason") or ""),
         price_usd=safe_float(data.get("price_usd")),
         change_pct=safe_float(data.get("change_pct")),
-        rsi14=safe_float(data.get("rsi14")),
+        rsi14v=safe_float(data.get("rsi14")),
         trend_score=data.get("trend_score") if isinstance(data.get("trend_score"), int) else None,
     )
 
     rec = {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "2.1"),
+        "version": data.get("version", "2.2"),
         "symbol": data.get("symbol"),
         "price_usd": data.get("price_usd"),
         "change_pct": data.get("change_pct"),
@@ -766,7 +768,7 @@ def health() -> Dict[str, Any]:
         "stripe_price_id_prefix": (e["price_id"][:10] + "...") if e["price_id"] else "",
         "stripe_webhook_secret_set": bool(e["webhook_secret"]),
         "brevo_enabled": brevo_configured(),
-        "version": "2.1",
+        "version": "2.2",
     }
 
 
@@ -853,7 +855,7 @@ def api_premium_report_today(x_api_key: str | None = Header(default=None)):
         signal_reason=str(raw.get("signal_reason") or ""),
         price_usd=safe_float(raw.get("price_usd")),
         change_pct=safe_float(raw.get("change_pct")),
-        rsi14=safe_float(raw.get("rsi14")),
+        rsi14v=safe_float(raw.get("rsi14")),
         trend_score=raw.get("trend_score") if isinstance(raw.get("trend_score"), int) else None,
     )
     return {"updated_at": iso_now(), "report": rep2 or ""}
@@ -1037,7 +1039,7 @@ def tcp_ping(host: str = "", port: int = 443, admin_key: str = ""):
         return JSONResponse(status_code=500, content={"ok": False, "host": host, "port": int(port), "error": str(e)})
 
 
-# --- Stripe: opprett checkout-session (POST)
+# --- Stripe: opprett checkout-session
 
 @app.post("/api/stripe/create-checkout")
 async def api_stripe_create_checkout(req: Request):
@@ -1092,7 +1094,7 @@ def api_stripe_claim_key(session_id: str = ""):
 
         customer = str(session.get("customer") or "")
         subscription = str(session.get("subscription") or "")
-        email = (session.get("customer_details") or {}).get("email") or session.get("customer_email") or ""
+        email = (session.get("customer_details") or {}).get("email") or session.get("customer_email") or session.get("customer_email") or ""
         email = (email or "").strip().lower()
 
         if not customer or not subscription:
@@ -1198,7 +1200,7 @@ def index() -> HTMLResponse:
 
 
 @app.get("/premium", response_class=HTMLResponse)
-def premium_page() -> HTMLResponse:
+def premium() -> HTMLResponse:
     return HTMLResponse(PREMIUM_HTML)
 
 
@@ -1273,7 +1275,8 @@ INDEX_HTML = """<!doctype html>
         <div class="btnrow">
           <button id="btnReload">Oppdater</button>
           <button id="btnRefresh">Hard refresh</button>
-          <button onclick="location.href='/premium'">Se Premium</button>
+          <button onclick="location.href='/archive'">Åpne arkiv</button>
+          <button onclick="location.href='/premium'">Premium</button>
         </div>
         <div class="muted" id="status" style="margin-top:8px">Status: …</div>
       </div>
@@ -1342,7 +1345,7 @@ PREMIUM_HTML = """<!doctype html>
   <title>Gullbrief Premium</title>
   <style>
     :root{--bg:#0f1720;--card:#16212c;--text:#e5e7eb;--muted:#9aa3af;--gold:#d4af37;--ok:#34d399;--err:#fb7185;--max:980px;--r:14px;}
-    *{box-sizing:border-box} body{margin:0;background:radial-gradient(1200px 800px at 20% 10%,#142234 0%,var(--bg) 55%) no-repeat;color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;line-height:1.5;}
+    *{box-sizing:border-box} body{margin:0;background:radial-gradient(1200px 800px at 20% 10%,#142234 0%,var(--bg) 55%) no-repeat;color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;line-height:1.45;}
     a{color:var(--text);text-decoration:none} a:hover{text-decoration:underline}
     .wrap{max-width:var(--max);margin:0 auto;padding:28px 18px 64px}
     header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:8px 0 20px}
@@ -1350,24 +1353,20 @@ PREMIUM_HTML = """<!doctype html>
     .nav{display:flex;gap:14px;align-items:center;color:var(--muted);font-size:14px}
     .nav a{color:var(--muted)}
     .cta{background:var(--gold);color:#0b0f14;padding:10px 14px;border-radius:999px;font-weight:800}
-    .hero{margin-top:4px}
-    .hero h1{margin:10px 0 8px;font-size:40px;font-family:ui-serif,Georgia,Times}
-    .hero p{margin:0;color:var(--muted);font-size:18px;max-width:75ch}
+    .hero h1{margin:10px 0 8px;font-size:44px;font-family:ui-serif,Georgia,Times}
+    .hero p{margin:0;color:var(--muted);font-size:18px;max-width:70ch}
     .grid{display:grid;grid-template-columns:1fr;gap:14px;margin-top:18px}
-    @media (min-width: 920px){.grid{grid-template-columns:1.2fr .8fr}}
+    @media (min-width:920px){.grid{grid-template-columns:1.1fr .9fr}}
     .card{background:rgba(22,33,44,.92);border:1px solid rgba(255,255,255,.06);border-radius:var(--r);padding:18px}
-    .kicker{color:var(--muted);font-weight:800;font-size:13px;text-transform:uppercase;letter-spacing:.08em}
-    .price{font-size:34px;font-weight:900;margin:10px 0 6px}
-    .small{font-size:12px;color:var(--muted)}
-    ul{margin:10px 0 0;padding:0 0 0 16px} li{margin:10px 0}
-    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px}
+    .muted{color:var(--muted)}
+    .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
     input{width:min(520px,100%);padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.06);color:var(--text);outline:none}
-    button{border:0;border-radius:12px;padding:10px 12px;font-weight:900;cursor:pointer;background:rgba(255,255,255,.08);color:var(--text)}
+    button{border:0;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer;background:rgba(255,255,255,.08);color:var(--text)}
     button:hover{background:rgba(255,255,255,.12)}
     .btn-primary{background:var(--gold);color:#0b0f14}
-    .note{margin-top:10px;color:var(--muted);font-size:13px}
-    .faq h3{margin:12px 0 6px;font-size:16px}
-    .divider{height:1px;background:rgba(255,255,255,.06);margin:14px 0}
+    ul{margin:10px 0 0;padding:0 0 0 16px}
+    li{margin:10px 0}
+    .small{font-size:12px;color:var(--muted)}
   </style>
 </head>
 <body>
@@ -1382,13 +1381,9 @@ PREMIUM_HTML = """<!doctype html>
     </header>
 
     <section class="hero">
-      <div class="kicker">Premium</div>
+      <div class="muted" style="font-weight:800;letter-spacing:.08em">PREMIUM</div>
       <h1>Daglig gullanalyse uten støy.</h1>
-      <p>
-        Gullbrief Premium gir deg en kort, nøktern daglig kommentar på norsk,
-        basert på pris, trend, makro og nyhetsstrøm. Du får også arkiv, signalhistorikk
-        og e-postvarsler.
-      </p>
+      <p>Gullbrief Premium gir deg en kort, nøktern daglig kommentar på norsk, basert på pris, trend, makro og nyhetsstrøm. Du får også arkiv, signalhistorikk og e-postvarsler.</p>
     </section>
 
     <section class="grid">
@@ -1401,50 +1396,46 @@ PREMIUM_HTML = """<!doctype html>
           <li><strong>E-post</strong>: daglig utsendelse + varsel ved signalendring</li>
         </ul>
 
-        <div class="divider"></div>
+        <hr style="border:0;border-top:1px solid rgba(255,255,255,.08);margin:16px 0">
 
         <div style="font-size:18px;font-weight:900">Kjøp Premium</div>
-        <div class="note">Skriv inn e-post, trykk kjøp, og du sendes til Stripe checkout.</div>
+        <div class="muted" style="margin-top:6px">Skriv inn e-post, trykk kjøp, og du sendes til Stripe checkout.</div>
 
-        <div class="row">
+        <div class="row" style="margin-top:12px">
           <input id="payEmail" placeholder="E-post for kjøp" autocomplete="email" />
           <button class="btn-primary" id="btnPay">Kjøp Premium</button>
-          <button onclick="location.href='/archive'">Jeg har allerede nøkkel</button>
+          <button id="btnHaveKey" onclick="location.href='/archive'">Jeg har allerede nøkkel</button>
         </div>
 
-        <div id="status" class="note"></div>
-
-        <div class="note">
-          Etter betaling blir premium-nøkkelen vist på <code>/success</code> og lagres automatisk i nettleseren.
-        </div>
+        <div id="status" class="small" style="margin-top:10px"></div>
+        <div class="small" style="margin-top:8px">Avbryt når som helst via Stripe.</div>
       </div>
 
-      <div class="card faq">
+      <div class="card">
         <div style="font-size:18px;font-weight:900">Spørsmål</div>
 
-        <h3>Hvor får jeg premium-nøkkelen?</h3>
-        <div class="note">Etter checkout sendes du til success-siden. Der hentes nøkkelen automatisk.</div>
+        <div style="margin-top:12px;font-weight:800">Hvor får jeg premium-nøkkelen?</div>
+        <div class="muted" style="margin-top:6px">Etter checkout sendes du til success-siden. Der hentes nøkkelen automatisk.</div>
 
-        <h3>Hvor ligger arkivet?</h3>
-        <div class="note">På <a href="/archive">/archive</a>. Teaser er gratis, full historikk krever nøkkel.</div>
+        <div style="margin-top:14px;font-weight:800">Hvor ligger arkivet?</div>
+        <div class="muted" style="margin-top:6px">På <code style="background:rgba(255,255,255,.07);padding:2px 6px;border-radius:8px">/archive</code>. Teaser er gratis, full historikk krever nøkkel.</div>
 
-        <h3>Kan jeg avbryte?</h3>
-        <div class="note">Ja, via Stripe. Når abonnementet stopper, blir nøkkelen inaktiv.</div>
+        <div style="margin-top:14px;font-weight:800">Kan jeg avbryte?</div>
+        <div class="muted" style="margin-top:6px">Ja, via Stripe. Når abonnementet stopper, blir nøkkelen inaktiv.</div>
 
-        <h3>Er dette investeringsråd?</h3>
-        <div class="note">Nei. Det er markedsanalyse og oppsummering, ikke kjøp/salg-anbefaling.</div>
+        <div style="margin-top:14px;font-weight:800">Er dette investeringsråd?</div>
+        <div class="muted" style="margin-top:6px">Nei. Det er markedsanalyse og oppsummering, ikke kjøp/salgs-anbefaling.</div>
       </div>
     </section>
   </div>
 
 <script>
   const $ = (id) => document.getElementById(id);
-
   function setStatus(msg){ $("status").textContent = msg; }
 
   async function startCheckout(){
     const email = $("payEmail").value.trim();
-    if(!email.includes("@")){ setStatus("Skriv inn gyldig e-post."); return; }
+    if(!email.includes("@")){ setStatus("Skriv inn gyldig e-post for kjøp."); return; }
     try{
       setStatus("Åpner Stripe checkout…");
       const res = await fetch("/api/stripe/create-checkout",{
@@ -1500,6 +1491,7 @@ ARCHIVE_HTML = """<!doctype html>
     code{background:rgba(255,255,255,.07);padding:2px 6px;border-radius:8px}
     .split{display:grid;grid-template-columns:1fr;gap:14px}
     @media (min-width: 920px){.split{grid-template-columns:1fr 1fr}}
+    .statgrid{display:grid;grid-template-columns:1fr;gap:8px;margin-top:10px}
   </style>
 </head>
 <body>
@@ -1540,10 +1532,21 @@ ARCHIVE_HTML = """<!doctype html>
         </div>
 
         <div class="row" style="margin-top:12px">
-          <button class="btn-primary" onclick="location.href='/premium'">Kjøp premium</button>
+          <input id="payEmail" placeholder="E-post for kjøp (Stripe)" autocomplete="email" />
+          <button class="btn-primary" id="btnPay">Kjøp premium</button>
         </div>
 
         <div id="status" class="small" style="margin-top:10px"></div>
+
+        <div id="sigStats" class="card" style="margin-top:12px; display:none">
+          <div style="font-size:16px;font-weight:900">Signalhistorikk (siste 30 signaler)</div>
+          <div class="muted small" id="sigStatsMeta" style="margin-top:6px"></div>
+          <div class="statgrid">
+            <div><strong>Bullish:</strong> <span id="bull7">–</span> etter 7d <span class="muted small" id="bullN"></span></div>
+            <div><strong>Bearish:</strong> <span id="bear7">–</span> etter 7d <span class="muted small" id="bearN"></span></div>
+            <div><strong>Treffsikkerhet:</strong> <span id="acc7">–</span> <span class="muted small" id="accN"></span></div>
+          </div>
+        </div>
 
         <table id="tbl" style="display:none">
           <thead><tr><th>Dato</th><th>Pris</th><th>Signal</th><th>7d</th><th>30d</th><th>Notat</th></tr></thead>
@@ -1570,6 +1573,41 @@ ARCHIVE_HTML = """<!doctype html>
 
   function loadSavedKey(){
     $("key").value = localStorage.getItem(LS_KEY) || "";
+  }
+
+  function mean(arr){
+    if(!arr.length) return null;
+    return arr.reduce((a,b)=>a+b,0)/arr.length;
+  }
+
+  function computeAndRenderStats(rows){
+    const last30 = (rows || []).slice(-30);
+
+    const bull = last30.filter(r => (r.signal||"").toLowerCase()==="bullish" && r.return_7d_pct != null);
+    const bear = last30.filter(r => (r.signal||"").toLowerCase()==="bearish" && r.return_7d_pct != null);
+
+    const bullR = bull.map(r => Number(r.return_7d_pct)).filter(x=>!Number.isNaN(x));
+    const bearR = bear.map(r => Number(r.return_7d_pct)).filter(x=>!Number.isNaN(x));
+
+    const bullAvg = mean(bullR);
+    const bearAvg = mean(bearR);
+
+    const bullHits = bullR.filter(x => x > 0).length;
+    const bearHits = bearR.filter(x => x < 0).length;
+
+    const total = bullR.length + bearR.length;
+    const acc = total ? ((bullHits + bearHits) / total) * 100 : null;
+
+    $("sigStats").style.display = "";
+    $("sigStatsMeta").textContent = "Basert på de siste 30 signalene. 7d vises først når det finnes data 7 dager fram i tid.";
+
+    $("bull7").textContent = bullAvg==null ? "–" : ((bullAvg>0?"+":"") + bullAvg.toFixed(2) + "%");
+    $("bear7").textContent = bearAvg==null ? "–" : ((bearAvg>0?"+":"") + bearAvg.toFixed(2) + "%");
+    $("acc7").textContent = acc==null ? "–" : acc.toFixed(0) + "%";
+
+    $("bullN").textContent = bullR.length ? `(n=${bullR.length})` : "";
+    $("bearN").textContent = bearR.length ? `(n=${bearR.length})` : "";
+    $("accN").textContent = total ? `(n=${total})` : "";
   }
 
   async function loadTeaser(){
@@ -1614,6 +1652,10 @@ ARCHIVE_HTML = """<!doctype html>
       const res = await fetch("/api/history?limit=200", {headers:{"x-api-key":k}, cache:"no-store"});
       const data = await res.json();
       if(!res.ok){ setStatus(data?.message || ("HTTP "+res.status)); return; }
+
+      // stats basert på rå rekkefølge (eldst->nyest)
+      computeAndRenderStats(data.items || []);
+
       const items = (data.items||[]).slice().reverse();
       items.forEach(r=>{
         const tr=document.createElement("tr");
@@ -1655,6 +1697,24 @@ ARCHIVE_HTML = """<!doctype html>
     }
   }
 
+  async function startCheckout(){
+    const email = $("payEmail").value.trim();
+    if(!email.includes("@")){ setStatus("Skriv inn gyldig e-post for kjøp."); return; }
+    try{
+      setStatus("Åpner Stripe checkout…");
+      const res = await fetch("/api/stripe/create-checkout",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({email})
+      });
+      const data = await res.json();
+      if(!res.ok){ setStatus(data?.message || ("HTTP "+res.status)); return; }
+      location.href = data.url;
+    }catch(e){
+      setStatus("Feil: " + e);
+    }
+  }
+
   $("btnSave").addEventListener("click", ()=>{
     localStorage.setItem(LS_KEY, $("key").value.trim());
     setStatus("Nøkkel lagret lokalt ✅");
@@ -1665,9 +1725,11 @@ ARCHIVE_HTML = """<!doctype html>
     setStatus("Nøkkel fjernet.");
     $("tbl").style.display="none";
     $("body").innerHTML="";
+    $("sigStats").style.display="none";
   });
   $("btnLoad").addEventListener("click", loadArchive);
   $("btnEmail").addEventListener("click", subscribeEmail);
+  $("btnPay").addEventListener("click", startCheckout);
 
   loadSavedKey();
   loadTeaser();
