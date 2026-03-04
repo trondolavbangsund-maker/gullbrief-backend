@@ -2166,6 +2166,20 @@ def premium_page(request: Request) -> HTMLResponse:
 def archive_page(request: Request) -> HTMLResponse:
     title = "Gullbrief arkiv – signalhistorikk og avkastning etter signal"
     desc = "Se siste snapshots gratis. Premium gir full historikk, signalhistorikk (siste 30) og 7d/30d etter signal."
+
+    # ✅ HTML “arkivkart” for crawling
+    dates = get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)
+    links = []
+    for d in dates[:60]:
+        links.append(f'<li><a href="/archive/{_escape_html(d)}">Arkiv { _escape_html(d) }</a></li>')
+    archive_map_html = (
+        "<div class='card' style='margin-top:12px'>"
+        "<div style='font-size:18px;font-weight:900'>Arkivkart (for crawling)</div>"
+        "<div class='muted'>Lenker til de siste dagene.</div>"
+        f"<ul>{''.join(links) if links else '<li class=\"muted\">Ingen arkiv-dager ennå.</li>'}</ul>"
+        "</div>"
+    )
+
     body = _replace_many(
         ARCHIVE_BODY_INNER,
         {
@@ -2173,6 +2187,10 @@ def archive_page(request: Request) -> HTMLResponse:
             "__FOOTER__": footer_links(),
         },
     )
+
+    # Legg arkivkartet etter første card (enkelt og trygt)
+    body = body.replace("</div>\n\n    <div class=\"card\">", f"</div>{archive_map_html}\n\n    <div class=\"card\">", 1)
+
     return HTMLResponse(html_shell(request, title=title, description=desc, path="/archive", body_html=body))
 
 @app.get("/archive/{day}", response_class=HTMLResponse)
