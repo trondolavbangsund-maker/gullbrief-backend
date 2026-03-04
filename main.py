@@ -814,14 +814,16 @@ def latest_signal() -> str:
 def get_archive_dates(last_n_days: int = 45) -> List[str]:
     """
     Returns unique YYYY-MM-DD dates found in history (newest first), limited by last_n_days window.
+    Robust against file order.
     """
-    rows = read_history(limit=1200)
-    dates: List[str] = []
-    seen = set()
+    rows = read_history(limit=2000)
     today_utc = datetime.now(timezone.utc).date()
     cutoff = today_utc - timedelta(days=max(0, last_n_days - 1))
 
-    for r in reversed(rows):  # newest -> oldest
+    seen = set()
+    dates: List[str] = []
+
+    for r in rows:
         d = _date_yyyy_mm_dd(str(r.get("updated_at") or ""))
         if not d:
             continue
@@ -830,12 +832,13 @@ def get_archive_dates(last_n_days: int = 45) -> List[str]:
         except Exception:
             continue
         if dd < cutoff:
-            break
+            continue
         if d not in seen:
             seen.add(d)
             dates.append(d)
 
-    return dates  # newest first
+    dates.sort(reverse=True)  # newest first
+    return dates
 
 def load_snapshot_for_date(day: str) -> Optional[Dict[str, Any]]:
     """
