@@ -60,7 +60,7 @@ STRIPE_CANCEL_URL_DEFAULT = os.getenv("STRIPE_CANCEL_URL", "http://127.0.0.1:800
 # App + CORS
 # =============================================================================
 
-app = FastAPI(title="Gullbrief Research", version="2.2")
+app = FastAPI(title="Gullbrief Research", version="2.3")
 
 origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
@@ -283,7 +283,7 @@ class YahooPrice:
 
 
 def fetch_yahoo_chart(symbol: str, range_: str, interval: str) -> Dict[str, Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/2.2)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/2.3)"}
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
     return http_get_json(url, headers=headers)
 
@@ -395,7 +395,7 @@ def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
 def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/2.2)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/2.3)"}
     all_items: List[Dict[str, str]] = []
     for feed_url in RSS_FEEDS:
         try:
@@ -454,7 +454,6 @@ def premium_report_ai(
     if not titles:
         titles = ["(Ingen nyhetsoverskrifter tilgjengelig)"]
 
-    # Fallback uten OpenAI
     if not OPENAI_API_KEY:
         bits = []
         if isinstance(price_usd, (int, float)):
@@ -507,7 +506,6 @@ def premium_report_ai(
         resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
         return (resp.output_text or "").strip()
     except Exception:
-        # fall tilbake
         return premium_report_ai(
             headlines=headlines,
             signal_state=signal_state,
@@ -546,7 +544,7 @@ def build_brief() -> Dict[str, Any]:
 
     return {
         "updated_at": yp.ts,
-        "version": "2.2",
+        "version": "2.3",
         "symbol": yp.symbol,
         "currency": yp.currency,
         "price_usd": yp.last,
@@ -577,7 +575,7 @@ def get_cached_brief(force_refresh: bool) -> Dict[str, Any]:
 def map_to_public_today(data: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "2.2"),
+        "version": data.get("version", "2.3"),
         "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
         "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
         "macro": {"summary_short": data.get("macro_summary", "")},
@@ -653,7 +651,7 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
 
     rec = {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "2.2"),
+        "version": data.get("version", "2.3"),
         "symbol": data.get("symbol"),
         "price_usd": data.get("price_usd"),
         "change_pct": data.get("change_pct"),
@@ -768,7 +766,7 @@ def health() -> Dict[str, Any]:
         "stripe_price_id_prefix": (e["price_id"][:10] + "...") if e["price_id"] else "",
         "stripe_webhook_secret_set": bool(e["webhook_secret"]),
         "brevo_enabled": brevo_configured(),
-        "version": "2.2",
+        "version": "2.3",
     }
 
 
@@ -1068,14 +1066,10 @@ async def api_stripe_create_checkout(req: Request):
         return JSONResponse(status_code=400, content={"error": "STRIPE_CREATE_CHECKOUT_FAILED", "message": str(ex)})
 
 
-# --- Success-side page
-
 @app.get("/success", response_class=HTMLResponse)
 def success_page(session_id: str = ""):
     return HTMLResponse(SUCCESS_HTML.replace("__SESSION_ID__", session_id or ""))
 
-
-# --- Claim key (polling)
 
 @app.get("/api/stripe/claim-key")
 def api_stripe_claim_key(session_id: str = ""):
@@ -1094,7 +1088,7 @@ def api_stripe_claim_key(session_id: str = ""):
 
         customer = str(session.get("customer") or "")
         subscription = str(session.get("subscription") or "")
-        email = (session.get("customer_details") or {}).get("email") or session.get("customer_email") or session.get("customer_email") or ""
+        email = (session.get("customer_details") or {}).get("email") or session.get("customer_email") or ""
         email = (email or "").strip().lower()
 
         if not customer or not subscription:
@@ -1113,8 +1107,6 @@ def api_stripe_claim_key(session_id: str = ""):
     except Exception as ex:
         return JSONResponse(status_code=400, content={"error": "STRIPE_CLAIM_FAILED", "message": str(ex)})
 
-
-# --- Stripe webhook (source of truth)
 
 @app.post("/api/stripe/webhook")
 async def stripe_webhook(request: Request):
@@ -1276,7 +1268,6 @@ INDEX_HTML = """<!doctype html>
           <button id="btnReload">Oppdater</button>
           <button id="btnRefresh">Hard refresh</button>
           <button onclick="location.href='/archive'">Åpne arkiv</button>
-          <button onclick="location.href='/premium'">Premium</button>
         </div>
         <div class="muted" id="status" style="margin-top:8px">Status: …</div>
       </div>
@@ -1344,7 +1335,7 @@ PREMIUM_HTML = """<!doctype html>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Gullbrief Premium</title>
   <style>
-    :root{--bg:#0f1720;--card:#16212c;--text:#e5e7eb;--muted:#9aa3af;--gold:#d4af37;--ok:#34d399;--err:#fb7185;--max:980px;--r:14px;}
+    :root{--bg:#0f1720;--card:#16212c;--text:#e5e7eb;--muted:#9aa3af;--gold:#d4af37;--ok:#34d399;--err:#fb7185;--max:980px;--r:16px;}
     *{box-sizing:border-box} body{margin:0;background:radial-gradient(1200px 800px at 20% 10%,#142234 0%,var(--bg) 55%) no-repeat;color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;line-height:1.45;}
     a{color:var(--text);text-decoration:none} a:hover{text-decoration:underline}
     .wrap{max-width:var(--max);margin:0 auto;padding:28px 18px 64px}
@@ -1352,21 +1343,25 @@ PREMIUM_HTML = """<!doctype html>
     .brand{font-weight:800}
     .nav{display:flex;gap:14px;align-items:center;color:var(--muted);font-size:14px}
     .nav a{color:var(--muted)}
-    .cta{background:var(--gold);color:#0b0f14;padding:10px 14px;border-radius:999px;font-weight:800}
+    .cta{background:var(--gold);color:#0b0f14;padding:10px 14px;border-radius:999px;font-weight:900}
+    .hero{padding:10px 0 18px}
     .hero h1{margin:10px 0 8px;font-size:44px;font-family:ui-serif,Georgia,Times}
-    .hero p{margin:0;color:var(--muted);font-size:18px;max-width:70ch}
-    .grid{display:grid;grid-template-columns:1fr;gap:14px;margin-top:18px}
-    @media (min-width:920px){.grid{grid-template-columns:1.1fr .9fr}}
+    .hero p{margin:0;color:var(--muted);font-size:18px;max-width:78ch}
+    .grid{display:grid;grid-template-columns:1fr;gap:14px;margin-top:14px}
+    @media (min-width: 920px){.grid{grid-template-columns:1.3fr .7fr}}
     .card{background:rgba(22,33,44,.92);border:1px solid rgba(255,255,255,.06);border-radius:var(--r);padding:18px}
-    .muted{color:var(--muted)}
-    .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
-    input{width:min(520px,100%);padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.06);color:var(--text);outline:none}
-    button{border:0;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer;background:rgba(255,255,255,.08);color:var(--text)}
+    ul{margin:10px 0 0;padding:0 0 0 18px}
+    li{margin:10px 0}
+    input{width:min(520px,100%);padding:12px 12px;border-radius:14px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.06);color:var(--text);outline:none}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px}
+    button{border:0;border-radius:14px;padding:12px 14px;font-weight:900;cursor:pointer;background:rgba(255,255,255,.08);color:var(--text)}
     button:hover{background:rgba(255,255,255,.12)}
     .btn-primary{background:var(--gold);color:#0b0f14}
-    ul{margin:10px 0 0;padding:0 0 0 16px}
-    li{margin:10px 0}
-    .small{font-size:12px;color:var(--muted)}
+    .muted{color:var(--muted)}
+    .faq h3{margin:12px 0 6px;font-size:16px}
+    .divider{height:1px;background:rgba(255,255,255,.06);margin:14px 0}
+    .pill{display:inline-flex;gap:8px;align-items:center;background:rgba(255,255,255,.06);border-radius:999px;padding:6px 10px;font-weight:900}
+    .pill .dot{width:9px;height:9px;border-radius:99px;background:var(--gold)}
   </style>
 </head>
 <body>
@@ -1381,14 +1376,14 @@ PREMIUM_HTML = """<!doctype html>
     </header>
 
     <section class="hero">
-      <div class="muted" style="font-weight:800;letter-spacing:.08em">PREMIUM</div>
+      <div class="pill"><span class="dot"></span> PREMIUM</div>
       <h1>Daglig gullanalyse uten støy.</h1>
       <p>Gullbrief Premium gir deg en kort, nøktern daglig kommentar på norsk, basert på pris, trend, makro og nyhetsstrøm. Du får også arkiv, signalhistorikk og e-postvarsler.</p>
     </section>
 
     <section class="grid">
       <div class="card">
-        <div style="font-size:18px;font-weight:900">Hva du får</div>
+        <h2 style="margin:0 0 8px">Hva du får</h2>
         <ul>
           <li><strong>Daglig premium-rapport</strong> (makro, drivere, hva som kan endre bildet)</li>
           <li><strong>Signal + indikatorforklaring</strong> (bullish / bearish / neutral)</li>
@@ -1396,35 +1391,34 @@ PREMIUM_HTML = """<!doctype html>
           <li><strong>E-post</strong>: daglig utsendelse + varsel ved signalendring</li>
         </ul>
 
-        <hr style="border:0;border-top:1px solid rgba(255,255,255,.08);margin:16px 0">
+        <div class="divider"></div>
 
-        <div style="font-size:18px;font-weight:900">Kjøp Premium</div>
-        <div class="muted" style="margin-top:6px">Skriv inn e-post, trykk kjøp, og du sendes til Stripe checkout.</div>
+        <h2 style="margin:0 0 6px">Kjøp Premium</h2>
+        <div class="muted">Skriv inn e-post, trykk kjøp, og du sendes til Stripe checkout.</div>
 
-        <div class="row" style="margin-top:12px">
+        <div class="row">
           <input id="payEmail" placeholder="E-post for kjøp" autocomplete="email" />
           <button class="btn-primary" id="btnPay">Kjøp Premium</button>
-          <button id="btnHaveKey" onclick="location.href='/archive'">Jeg har allerede nøkkel</button>
+          <button onclick="location.href='/archive'">Jeg har allerede nøkkel</button>
         </div>
 
-        <div id="status" class="small" style="margin-top:10px"></div>
-        <div class="small" style="margin-top:8px">Avbryt når som helst via Stripe.</div>
+        <div class="muted" id="status" style="margin-top:10px"></div>
       </div>
 
-      <div class="card">
-        <div style="font-size:18px;font-weight:900">Spørsmål</div>
+      <div class="card faq">
+        <h2 style="margin:0 0 8px">Spørsmål</h2>
 
-        <div style="margin-top:12px;font-weight:800">Hvor får jeg premium-nøkkelen?</div>
-        <div class="muted" style="margin-top:6px">Etter checkout sendes du til success-siden. Der hentes nøkkelen automatisk.</div>
+        <h3>Hvor får jeg premium-nøkkelen?</h3>
+        <div class="muted">Etter checkout sendes du til success-siden. Der hentes nøkkelen automatisk.</div>
 
-        <div style="margin-top:14px;font-weight:800">Hvor ligger arkivet?</div>
-        <div class="muted" style="margin-top:6px">På <code style="background:rgba(255,255,255,.07);padding:2px 6px;border-radius:8px">/archive</code>. Teaser er gratis, full historikk krever nøkkel.</div>
+        <h3>Hvor ligger arkivet?</h3>
+        <div class="muted">På <code>/archive</code>. Teaser er gratis, full historikk krever nøkkel.</div>
 
-        <div style="margin-top:14px;font-weight:800">Kan jeg avbryte?</div>
-        <div class="muted" style="margin-top:6px">Ja, via Stripe. Når abonnementet stopper, blir nøkkelen inaktiv.</div>
+        <h3>Kan jeg avbryte?</h3>
+        <div class="muted">Ja, via Stripe. Når abonnementet stopper, blir nøkkelen inaktiv.</div>
 
-        <div style="margin-top:14px;font-weight:800">Er dette investeringsråd?</div>
-        <div class="muted" style="margin-top:6px">Nei. Det er markedsanalyse og oppsummering, ikke kjøp/salgs-anbefaling.</div>
+        <h3>Er dette investeringsråd?</h3>
+        <div class="muted">Nei. Det er markedsanalyse og oppsummering, ikke kjøp/salg-anbefaling.</div>
       </div>
     </section>
   </div>
@@ -1450,7 +1444,6 @@ PREMIUM_HTML = """<!doctype html>
       setStatus("Feil: " + e);
     }
   }
-
   $("btnPay").addEventListener("click", startCheckout);
 </script>
 </body>
@@ -1491,7 +1484,13 @@ ARCHIVE_HTML = """<!doctype html>
     code{background:rgba(255,255,255,.07);padding:2px 6px;border-radius:8px}
     .split{display:grid;grid-template-columns:1fr;gap:14px}
     @media (min-width: 920px){.split{grid-template-columns:1fr 1fr}}
-    .statgrid{display:grid;grid-template-columns:1fr;gap:8px;margin-top:10px}
+    .kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px}
+    .kpi .box{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:10px}
+    .kpi .label{font-size:12px;color:var(--muted);font-weight:800}
+    .kpi .value{font-size:18px;font-weight:900;margin-top:6px}
+    .siglist{margin-top:10px}
+    .sigrow{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.06)}
+    .sigrow:last-child{border-bottom:0}
   </style>
 </head>
 <body>
@@ -1538,16 +1537,6 @@ ARCHIVE_HTML = """<!doctype html>
 
         <div id="status" class="small" style="margin-top:10px"></div>
 
-        <div id="sigStats" class="card" style="margin-top:12px; display:none">
-          <div style="font-size:16px;font-weight:900">Signalhistorikk (siste 30 signaler)</div>
-          <div class="muted small" id="sigStatsMeta" style="margin-top:6px"></div>
-          <div class="statgrid">
-            <div><strong>Bullish:</strong> <span id="bull7">–</span> etter 7d <span class="muted small" id="bullN"></span></div>
-            <div><strong>Bearish:</strong> <span id="bear7">–</span> etter 7d <span class="muted small" id="bearN"></span></div>
-            <div><strong>Treffsikkerhet:</strong> <span id="acc7">–</span> <span class="muted small" id="accN"></span></div>
-          </div>
-        </div>
-
         <table id="tbl" style="display:none">
           <thead><tr><th>Dato</th><th>Pris</th><th>Signal</th><th>7d</th><th>30d</th><th>Notat</th></tr></thead>
           <tbody id="body"></tbody>
@@ -1555,6 +1544,28 @@ ARCHIVE_HTML = """<!doctype html>
 
         <div class="small" style="margin-top:10px">
           API: <code>/api/history</code> med header <code>x-api-key</code>.
+        </div>
+
+        <div class="card" style="margin-top:14px;padding:14px">
+          <div style="font-size:16px;font-weight:900">Signalhistorikk (siste 30)</div>
+          <div class="muted small">Beregnet fra historikken din. 7d/30d fylles først når nok dager har gått.</div>
+
+          <div class="kpi" id="kpi" style="display:none">
+            <div class="box">
+              <div class="label">Bullish: snitt 7d</div>
+              <div class="value" id="kBull7d">–</div>
+            </div>
+            <div class="box">
+              <div class="label">Bearish: snitt 7d</div>
+              <div class="value" id="kBear7d">–</div>
+            </div>
+            <div class="box">
+              <div class="label">Treffsikkerhet (7d)</div>
+              <div class="value" id="kAcc">–</div>
+            </div>
+          </div>
+
+          <div class="siglist" id="sigList"></div>
         </div>
       </div>
     </div>
@@ -1573,41 +1584,6 @@ ARCHIVE_HTML = """<!doctype html>
 
   function loadSavedKey(){
     $("key").value = localStorage.getItem(LS_KEY) || "";
-  }
-
-  function mean(arr){
-    if(!arr.length) return null;
-    return arr.reduce((a,b)=>a+b,0)/arr.length;
-  }
-
-  function computeAndRenderStats(rows){
-    const last30 = (rows || []).slice(-30);
-
-    const bull = last30.filter(r => (r.signal||"").toLowerCase()==="bullish" && r.return_7d_pct != null);
-    const bear = last30.filter(r => (r.signal||"").toLowerCase()==="bearish" && r.return_7d_pct != null);
-
-    const bullR = bull.map(r => Number(r.return_7d_pct)).filter(x=>!Number.isNaN(x));
-    const bearR = bear.map(r => Number(r.return_7d_pct)).filter(x=>!Number.isNaN(x));
-
-    const bullAvg = mean(bullR);
-    const bearAvg = mean(bearR);
-
-    const bullHits = bullR.filter(x => x > 0).length;
-    const bearHits = bearR.filter(x => x < 0).length;
-
-    const total = bullR.length + bearR.length;
-    const acc = total ? ((bullHits + bearHits) / total) * 100 : null;
-
-    $("sigStats").style.display = "";
-    $("sigStatsMeta").textContent = "Basert på de siste 30 signalene. 7d vises først når det finnes data 7 dager fram i tid.";
-
-    $("bull7").textContent = bullAvg==null ? "–" : ((bullAvg>0?"+":"") + bullAvg.toFixed(2) + "%");
-    $("bear7").textContent = bearAvg==null ? "–" : ((bearAvg>0?"+":"") + bearAvg.toFixed(2) + "%");
-    $("acc7").textContent = acc==null ? "–" : acc.toFixed(0) + "%";
-
-    $("bullN").textContent = bullR.length ? `(n=${bullR.length})` : "";
-    $("bearN").textContent = bearR.length ? `(n=${bearR.length})` : "";
-    $("accN").textContent = total ? `(n=${total})` : "";
   }
 
   async function loadTeaser(){
@@ -1642,6 +1618,74 @@ ARCHIVE_HTML = """<!doctype html>
     }
   }
 
+  function renderSignalStats(items){
+    const list = $("sigList");
+    list.innerHTML = "";
+    if(!items || items.length === 0){
+      list.innerHTML = `<div class="small muted">Ingen historikk lastet ennå.</div>`;
+      $("kpi").style.display = "none";
+      return;
+    }
+
+    const last30 = items.slice().reverse().slice(0, 30); // nyeste først
+    // KPI-beregning bruker bare punkter der return_7d_pct finnes
+    const with7d = last30.filter(r => r.return_7d_pct != null && !Number.isNaN(Number(r.return_7d_pct)));
+
+    const bull = with7d.filter(r => (r.signal||"").toLowerCase().includes("bull"));
+    const bear = with7d.filter(r => (r.signal||"").toLowerCase().includes("bear"));
+
+    const avg = (arr) => arr.length ? (arr.reduce((a,r)=>a+Number(r.return_7d_pct),0)/arr.length) : null;
+
+    const bullAvg = avg(bull);
+    const bearAvg = avg(bear);
+
+    // treffsikkerhet: bullish "treffer" hvis 7d > 0, bearish "treffer" hvis 7d < 0
+    let hits = 0, total = 0;
+    with7d.forEach(r=>{
+      const s = (r.signal||"").toLowerCase();
+      const ret = Number(r.return_7d_pct);
+      if(s.includes("bull")){
+        total += 1;
+        if(ret > 0) hits += 1;
+      } else if(s.includes("bear")){
+        total += 1;
+        if(ret < 0) hits += 1;
+      }
+    });
+    const acc = total ? (hits/total*100) : null;
+
+    $("kpi").style.display = "";
+    $("kBull7d").textContent = bullAvg==null ? "–" : ((bullAvg>0?"+":"") + bullAvg.toFixed(2) + "%");
+    $("kBear7d").textContent = bearAvg==null ? "–" : ((bearAvg>0?"+":"") + bearAvg.toFixed(2) + "%");
+    $("kAcc").textContent = acc==null ? "–" : (acc.toFixed(0) + "%");
+
+    // Liste over siste 30 signaler
+    last30.forEach(r=>{
+      const s = r.signal || "neutral";
+      const row = document.createElement("div");
+      row.className = "sigrow";
+      row.innerHTML = `
+        <div>
+          <div style="font-weight:900">${(r.updated_at||"").slice(0,19).replace("T"," ")}</div>
+          <div class="small muted">${r.symbol||""} · ${fmtPrice(r.price_usd)}</div>
+        </div>
+        <div style="text-align:right">
+          <div><span class="pill ${pillClass(s)}"><span class="dot"></span>${s}</span></div>
+          <div class="small muted">7d: ${fmtPct(r.return_7d_pct)}</div>
+        </div>
+      `;
+      list.appendChild(row);
+    });
+
+    if(with7d.length === 0){
+      const note = document.createElement("div");
+      note.className = "small muted";
+      note.style.marginTop = "8px";
+      note.textContent = "7d/treffsikkerhet vises når du har historikk som er minst 7 dager gammel.";
+      list.prepend(note);
+    }
+  }
+
   async function loadArchive(){
     const k = $("key").value.trim();
     if(!k){ setStatus("Legg inn premium-nøkkel først."); return; }
@@ -1649,15 +1693,12 @@ ARCHIVE_HTML = """<!doctype html>
     $("tbl").style.display="none";
     $("body").innerHTML="";
     try{
-      const res = await fetch("/api/history?limit=200", {headers:{"x-api-key":k}, cache:"no-store"});
+      const res = await fetch("/api/history?limit=300", {headers:{"x-api-key":k}, cache:"no-store"});
       const data = await res.json();
       if(!res.ok){ setStatus(data?.message || ("HTTP "+res.status)); return; }
-
-      // stats basert på rå rekkefølge (eldst->nyest)
-      computeAndRenderStats(data.items || []);
-
-      const items = (data.items||[]).slice().reverse();
-      items.forEach(r=>{
+      const items = (data.items||[]).slice(); // oldest->newest
+      const view = items.slice().reverse();   // newest->oldest in table
+      view.forEach(r=>{
         const tr=document.createElement("tr");
         const sig=r.signal||"neutral";
         tr.innerHTML = `
@@ -1671,7 +1712,8 @@ ARCHIVE_HTML = """<!doctype html>
         $("body").appendChild(tr);
       });
       $("tbl").style.display="";
-      setStatus(`OK: ${data.count} snapshots (viser ${items.length}).`);
+      setStatus(`OK: ${data.count} snapshots.`);
+      renderSignalStats(items);
     }catch(e){
       setStatus("Feil: " + e);
     }
@@ -1725,7 +1767,7 @@ ARCHIVE_HTML = """<!doctype html>
     setStatus("Nøkkel fjernet.");
     $("tbl").style.display="none";
     $("body").innerHTML="";
-    $("sigStats").style.display="none";
+    renderSignalStats([]);
   });
   $("btnLoad").addEventListener("click", loadArchive);
   $("btnEmail").addEventListener("click", subscribeEmail);
@@ -1733,6 +1775,7 @@ ARCHIVE_HTML = """<!doctype html>
 
   loadSavedKey();
   loadTeaser();
+  renderSignalStats([]);
   if($("key").value.trim()){ loadArchive(); }
 </script>
 </body>
