@@ -1543,7 +1543,7 @@ def feed_xml(request: Request):
 
     items_xml = []
     # newest first
-    for r in reversed(rows)[-FEED_ITEMS:][::-1]:
+    for r in list(reversed(rows))[:FEED_ITEMS]:
         upd = str(r.get("updated_at") or "")
         d = _date_yyyy_mm_dd(upd) or ""
         sig = str(r.get("signal") or "neutral").upper()
