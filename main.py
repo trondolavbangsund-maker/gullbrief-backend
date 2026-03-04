@@ -53,14 +53,14 @@ SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "Gullbrief").strip()
 
 # Stripe defaults (read dynamically too)
 STRIPE_SUCCESS_URL_DEFAULT = os.getenv("STRIPE_SUCCESS_URL", "http://127.0.0.1:8000/success").strip()
-STRIPE_CANCEL_URL_DEFAULT = os.getenv("STRIPE_CANCEL_URL", "http://127.0.0.1:8000/archive").strip()
+STRIPE_CANCEL_URL_DEFAULT = os.getenv("STRIPE_CANCEL_URL", "http://127.0.0.1:8000/premium").strip()
 
 
 # =============================================================================
 # App + CORS
 # =============================================================================
 
-app = FastAPI(title="Gullbrief Research", version="2.0")
+app = FastAPI(title="Gullbrief Research", version="2.1")
 
 origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
@@ -283,7 +283,7 @@ class YahooPrice:
 
 
 def fetch_yahoo_chart(symbol: str, range_: str, interval: str) -> Dict[str, Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/2.0)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/2.1)"}
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
     return http_get_json(url, headers=headers)
 
@@ -395,7 +395,7 @@ def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
 def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/2.0)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/2.1)"}
     all_items: List[Dict[str, str]] = []
     for feed_url in RSS_FEEDS:
         try:
@@ -454,7 +454,6 @@ def premium_report_ai(
     if not titles:
         titles = ["(Ingen nyhetsoverskrifter tilgjengelig)"]
 
-    # Fallback uten OpenAI: helt ok for “minste mulig drift”
     if not OPENAI_API_KEY:
         bits = []
         if isinstance(price_usd, (int, float)):
@@ -507,7 +506,6 @@ def premium_report_ai(
         resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
         return (resp.output_text or "").strip()
     except Exception:
-        # fall tilbake til non-AI format hvis OpenAI feiler midlertidig
         return premium_report_ai(
             headlines=headlines,
             signal_state=signal_state,
@@ -546,7 +544,7 @@ def build_brief() -> Dict[str, Any]:
 
     return {
         "updated_at": yp.ts,
-        "version": "2.0",
+        "version": "2.1",
         "symbol": yp.symbol,
         "currency": yp.currency,
         "price_usd": yp.last,
@@ -577,7 +575,7 @@ def get_cached_brief(force_refresh: bool) -> Dict[str, Any]:
 def map_to_public_today(data: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "2.0"),
+        "version": data.get("version", "2.1"),
         "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
         "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
         "macro": {"summary_short": data.get("macro_summary", "")},
@@ -653,7 +651,7 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
 
     rec = {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "2.0"),
+        "version": data.get("version", "2.1"),
         "symbol": data.get("symbol"),
         "price_usd": data.get("price_usd"),
         "change_pct": data.get("change_pct"),
@@ -768,7 +766,7 @@ def health() -> Dict[str, Any]:
         "stripe_price_id_prefix": (e["price_id"][:10] + "...") if e["price_id"] else "",
         "stripe_webhook_secret_set": bool(e["webhook_secret"]),
         "brevo_enabled": brevo_configured(),
-        "version": "2.0",
+        "version": "2.1",
     }
 
 
@@ -848,7 +846,6 @@ def api_premium_report_today(x_api_key: str | None = Header(default=None)):
     if rep:
         return {"updated_at": last.get("updated_at") or iso_now(), "report": rep}
 
-    # fallback: generer on-demand
     raw = get_cached_brief(force_refresh=False)
     rep2 = premium_report_ai(
         headlines=raw.get("headlines", []),
@@ -906,7 +903,6 @@ def api_check_signal(admin_key: str = ""):
     sent = 0
 
     for row in rows:
-        # kun aktive premium keys
         if not is_valid_key(row["api_key"]):
             continue
 
@@ -1041,7 +1037,7 @@ def tcp_ping(host: str = "", port: int = 443, admin_key: str = ""):
         return JSONResponse(status_code=500, content={"ok": False, "host": host, "port": int(port), "error": str(e)})
 
 
-# --- Stripe: opprett checkout-session
+# --- Stripe: opprett checkout-session (POST)
 
 @app.post("/api/stripe/create-checkout")
 async def api_stripe_create_checkout(req: Request):
@@ -1201,13 +1197,18 @@ def index() -> HTMLResponse:
     return HTMLResponse(INDEX_HTML)
 
 
+@app.get("/premium", response_class=HTMLResponse)
+def premium_page() -> HTMLResponse:
+    return HTMLResponse(PREMIUM_HTML)
+
+
 @app.get("/archive", response_class=HTMLResponse)
 def archive() -> HTMLResponse:
     return HTMLResponse(ARCHIVE_HTML)
 
 
 # =============================================================================
-# HTML templates (samme som før)
+# HTML templates
 # =============================================================================
 
 INDEX_HTML = """<!doctype html>
@@ -1251,7 +1252,7 @@ INDEX_HTML = """<!doctype html>
       <div class="nav">
         <a href="/">Analyse</a>
         <a href="/archive">Arkiv</a>
-        <a class="cta" href="/archive">Premium</a>
+        <a class="cta" href="/premium">Premium</a>
       </div>
     </header>
 
@@ -1272,7 +1273,7 @@ INDEX_HTML = """<!doctype html>
         <div class="btnrow">
           <button id="btnReload">Oppdater</button>
           <button id="btnRefresh">Hard refresh</button>
-          <button onclick="location.href='/archive'">Åpne arkiv</button>
+          <button onclick="location.href='/premium'">Se Premium</button>
         </div>
         <div class="muted" id="status" style="margin-top:8px">Status: …</div>
       </div>
@@ -1333,6 +1334,138 @@ INDEX_HTML = """<!doctype html>
 </html>
 """
 
+PREMIUM_HTML = """<!doctype html>
+<html lang="no">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Gullbrief Premium</title>
+  <style>
+    :root{--bg:#0f1720;--card:#16212c;--text:#e5e7eb;--muted:#9aa3af;--gold:#d4af37;--ok:#34d399;--err:#fb7185;--max:980px;--r:14px;}
+    *{box-sizing:border-box} body{margin:0;background:radial-gradient(1200px 800px at 20% 10%,#142234 0%,var(--bg) 55%) no-repeat;color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;line-height:1.5;}
+    a{color:var(--text);text-decoration:none} a:hover{text-decoration:underline}
+    .wrap{max-width:var(--max);margin:0 auto;padding:28px 18px 64px}
+    header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:8px 0 20px}
+    .brand{font-weight:800}
+    .nav{display:flex;gap:14px;align-items:center;color:var(--muted);font-size:14px}
+    .nav a{color:var(--muted)}
+    .cta{background:var(--gold);color:#0b0f14;padding:10px 14px;border-radius:999px;font-weight:800}
+    .hero{margin-top:4px}
+    .hero h1{margin:10px 0 8px;font-size:40px;font-family:ui-serif,Georgia,Times}
+    .hero p{margin:0;color:var(--muted);font-size:18px;max-width:75ch}
+    .grid{display:grid;grid-template-columns:1fr;gap:14px;margin-top:18px}
+    @media (min-width: 920px){.grid{grid-template-columns:1.2fr .8fr}}
+    .card{background:rgba(22,33,44,.92);border:1px solid rgba(255,255,255,.06);border-radius:var(--r);padding:18px}
+    .kicker{color:var(--muted);font-weight:800;font-size:13px;text-transform:uppercase;letter-spacing:.08em}
+    .price{font-size:34px;font-weight:900;margin:10px 0 6px}
+    .small{font-size:12px;color:var(--muted)}
+    ul{margin:10px 0 0;padding:0 0 0 16px} li{margin:10px 0}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px}
+    input{width:min(520px,100%);padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.06);color:var(--text);outline:none}
+    button{border:0;border-radius:12px;padding:10px 12px;font-weight:900;cursor:pointer;background:rgba(255,255,255,.08);color:var(--text)}
+    button:hover{background:rgba(255,255,255,.12)}
+    .btn-primary{background:var(--gold);color:#0b0f14}
+    .note{margin-top:10px;color:var(--muted);font-size:13px}
+    .faq h3{margin:12px 0 6px;font-size:16px}
+    .divider{height:1px;background:rgba(255,255,255,.06);margin:14px 0}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">Gullbrief</div>
+      <div class="nav">
+        <a href="/">Analyse</a>
+        <a href="/archive">Arkiv</a>
+        <a class="cta" href="/premium">Premium</a>
+      </div>
+    </header>
+
+    <section class="hero">
+      <div class="kicker">Premium</div>
+      <h1>Daglig gullanalyse uten støy.</h1>
+      <p>
+        Gullbrief Premium gir deg en kort, nøktern daglig kommentar på norsk,
+        basert på pris, trend, makro og nyhetsstrøm. Du får også arkiv, signalhistorikk
+        og e-postvarsler.
+      </p>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <div style="font-size:18px;font-weight:900">Hva du får</div>
+        <ul>
+          <li><strong>Daglig premium-rapport</strong> (makro, drivere, hva som kan endre bildet)</li>
+          <li><strong>Signal + indikatorforklaring</strong> (bullish / bearish / neutral)</li>
+          <li><strong>Arkiv</strong> med historikk og avkastning 7d/30d fra signalpunkter</li>
+          <li><strong>E-post</strong>: daglig utsendelse + varsel ved signalendring</li>
+        </ul>
+
+        <div class="divider"></div>
+
+        <div style="font-size:18px;font-weight:900">Kjøp Premium</div>
+        <div class="note">Skriv inn e-post, trykk kjøp, og du sendes til Stripe checkout.</div>
+
+        <div class="row">
+          <input id="payEmail" placeholder="E-post for kjøp" autocomplete="email" />
+          <button class="btn-primary" id="btnPay">Kjøp Premium</button>
+          <button onclick="location.href='/archive'">Jeg har allerede nøkkel</button>
+        </div>
+
+        <div id="status" class="note"></div>
+
+        <div class="note">
+          Etter betaling blir premium-nøkkelen vist på <code>/success</code> og lagres automatisk i nettleseren.
+        </div>
+      </div>
+
+      <div class="card faq">
+        <div style="font-size:18px;font-weight:900">Spørsmål</div>
+
+        <h3>Hvor får jeg premium-nøkkelen?</h3>
+        <div class="note">Etter checkout sendes du til success-siden. Der hentes nøkkelen automatisk.</div>
+
+        <h3>Hvor ligger arkivet?</h3>
+        <div class="note">På <a href="/archive">/archive</a>. Teaser er gratis, full historikk krever nøkkel.</div>
+
+        <h3>Kan jeg avbryte?</h3>
+        <div class="note">Ja, via Stripe. Når abonnementet stopper, blir nøkkelen inaktiv.</div>
+
+        <h3>Er dette investeringsråd?</h3>
+        <div class="note">Nei. Det er markedsanalyse og oppsummering, ikke kjøp/salg-anbefaling.</div>
+      </div>
+    </section>
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+
+  function setStatus(msg){ $("status").textContent = msg; }
+
+  async function startCheckout(){
+    const email = $("payEmail").value.trim();
+    if(!email.includes("@")){ setStatus("Skriv inn gyldig e-post."); return; }
+    try{
+      setStatus("Åpner Stripe checkout…");
+      const res = await fetch("/api/stripe/create-checkout",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({email})
+      });
+      const data = await res.json();
+      if(!res.ok){ setStatus(data?.message || ("HTTP "+res.status)); return; }
+      location.href = data.url;
+    }catch(e){
+      setStatus("Feil: " + e);
+    }
+  }
+
+  $("btnPay").addEventListener("click", startCheckout);
+</script>
+</body>
+</html>
+"""
+
 ARCHIVE_HTML = """<!doctype html>
 <html lang="no">
 <head>
@@ -1374,8 +1507,8 @@ ARCHIVE_HTML = """<!doctype html>
     <header>
       <div class="brand">Gullbrief Arkiv</div>
       <div class="nav">
-        <a href="/">Til analyse</a>
-        <a class="cta" href="/">Gullbrief</a>
+        <a href="/">Analyse</a>
+        <a class="cta" href="/premium">Premium</a>
       </div>
     </header>
 
@@ -1391,7 +1524,7 @@ ARCHIVE_HTML = """<!doctype html>
       </div>
 
       <div class="card">
-        <div style="font-size:18px;font-weight:900">Premium</div>
+        <div style="font-size:18px;font-weight:900">Medlemsområde</div>
         <div class="muted">Lim inn premium-nøkkel. Den lagres lokalt i nettleseren (localStorage).</div>
 
         <div class="row" style="margin-top:12px">
@@ -1407,8 +1540,7 @@ ARCHIVE_HTML = """<!doctype html>
         </div>
 
         <div class="row" style="margin-top:12px">
-          <input id="payEmail" placeholder="E-post for kjøp (Stripe)" autocomplete="email" />
-          <button class="btn-primary" id="btnPay">Kjøp premium</button>
+          <button class="btn-primary" onclick="location.href='/premium'">Kjøp premium</button>
         </div>
 
         <div id="status" class="small" style="margin-top:10px"></div>
@@ -1523,24 +1655,6 @@ ARCHIVE_HTML = """<!doctype html>
     }
   }
 
-  async function startCheckout(){
-    const email = $("payEmail").value.trim();
-    if(!email.includes("@")){ setStatus("Skriv inn gyldig e-post for kjøp."); return; }
-    try{
-      setStatus("Åpner Stripe checkout…");
-      const res = await fetch("/api/stripe/create-checkout",{
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({email})
-      });
-      const data = await res.json();
-      if(!res.ok){ setStatus(data?.message || ("HTTP "+res.status)); return; }
-      location.href = data.url;
-    }catch(e){
-      setStatus("Feil: " + e);
-    }
-  }
-
   $("btnSave").addEventListener("click", ()=>{
     localStorage.setItem(LS_KEY, $("key").value.trim());
     setStatus("Nøkkel lagret lokalt ✅");
@@ -1554,7 +1668,6 @@ ARCHIVE_HTML = """<!doctype html>
   });
   $("btnLoad").addEventListener("click", loadArchive);
   $("btnEmail").addEventListener("click", subscribeEmail);
-  $("btnPay").addEventListener("click", startCheckout);
 
   loadSavedKey();
   loadTeaser();
