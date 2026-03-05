@@ -506,8 +506,10 @@ def _dt(pub: str):
 def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
+
     headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.2)"}
     all_items: List[Dict[str, str]] = []
+
     for feed_url in RSS_FEEDS:
         try:
             xml_text = http_get_text(feed_url, headers=headers, timeout=20)
@@ -515,21 +517,22 @@ def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
         except Exception:
             continue
 
-# Sorter: nyeste først (items uten dato havner nederst)
-all_items.sort(
-    key=lambda x: (_dt(x.get("published", "")) is not None, _dt(x.get("published", ""))),
-    reverse=True,
-)
+    # Sorter: nyeste først (items uten dato havner nederst)
+    all_items.sort(
+        key=lambda x: (_dt(x.get("published", "")) is not None, _dt(x.get("published", ""))),
+        reverse=True,
+    )
 
-seen, out = set(), []
-for it in all_items:
-    lk = it.get("link", "")
-    if lk and lk not in seen:
-        seen.add(lk)
-        out.append(it)
-    if len(out) >= limit:
-        break
-return out
+    seen, out = set(), []
+    for it in all_items:
+        lk = it.get("link", "")
+        if lk and lk not in seen:
+            seen.add(lk)
+            out.append(it)
+        if len(out) >= limit:
+            break
+
+    return out
 
 
 # =============================================================================
