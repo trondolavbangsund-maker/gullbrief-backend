@@ -558,7 +558,7 @@ def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
 
     seen, out = set(), []
     for it in all_items:
-        lk = it.get("link", "")
+        lk = resolve_redirect(it.get("link", ""))
 
         if "news.google.com/" in lk:
             lk = resolve_redirect(lk)
