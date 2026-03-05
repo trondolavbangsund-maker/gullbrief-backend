@@ -508,6 +508,17 @@ def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
             all_items.extend(parse_rss(xml_text, fallback_source=domain_of(feed_url) or "RSS"))
         except Exception:
             continue
+def _dt(pub: str):
+        try:
+        return parsedate_to_datetime(pub) if pub else None
+        except Exception:
+        return None
+
+# Sorter: nyeste først (items uten dato havner nederst)
+all_items.sort(
+    key=lambda x: (_dt(x.get("published", "")) is not None, _dt(x.get("published", ""))),
+    reverse=True,
+)
 
     seen, out = set(), []
     for it in all_items:
