@@ -1649,6 +1649,10 @@ INDEX_BODY_TEMPLATE = """
 
       <h2 style="margin-top:14px">Makro i dag</h2>
       <p class="muted" id="macro">–</p>
+      
+      <p class="muted">
+      Se også vår <a href="/gullpris-prognose">gullpris prognose</a> for scenario de neste dagene.
+      </p>
 
       <div class="btnrow">
         <button id="btnReload">Oppdater</button>
