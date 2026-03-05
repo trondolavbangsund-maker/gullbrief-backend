@@ -1494,6 +1494,7 @@ def sitemap_xml(request: Request):
     base = get_base_url(request)
 
     static_urls = [
+        ("/gullpris-prognose", "daily"),
         ("/", "daily"),
         ("/premium", "weekly"),
         ("/archive", "daily"),
@@ -1609,6 +1610,7 @@ def footer_links() -> str:
     return """
     <footer>
       <div class="links">
+        <a href="/gullpris-prognose">Gullpris prognose</a>
         <a href="/gullpris">Gullpris i dag</a>
         <a href="/gullpris-analyse">Gullpris analyse</a>
         <a href="/gullpris-signal">Gullpris signal</a>
@@ -2304,15 +2306,15 @@ def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, int
     )
     return HTMLResponse(html_shell(request, title=title, description=desc, path=path, body_html=body))
 
-@app.get("/gullpris", response_class=HTMLResponse)
-def page_gullpris(request: Request) -> HTMLResponse:
+@app.get("/gullpris-prognose", response_class=HTMLResponse)
+def page_gullpris_prognose(request: Request) -> HTMLResponse:
     return seo_landing(
         request,
-        path="/gullpris",
-        title="Gullpris i dag – pris, signal og kort analyse",
-        desc="Se gullpris i dag (USD), signal og kort makro. Oppdatert daglig. Premium gir arkiv og signalhistorikk.",
-        h1="Gullpris i dag",
-        intro="Pris, signal og kort kontekst. Oppdatert daglig. For historikk og treffsikkerhet: Premium.",
+        path="/gullpris-prognose",
+        title="Gullpris prognose – scenario for de neste dagene",
+        desc="Gullpris prognose basert på trend, signal og makrodrivere som renter, USD og geopolitikk.",
+        h1="Gullpris prognose",
+        intro="Et enkelt scenario for hvordan gullprisen kan utvikle seg de neste 24–72 timene."
     )
 
 @app.get("/gullpris-analyse", response_class=HTMLResponse)
