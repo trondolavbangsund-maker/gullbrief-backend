@@ -521,15 +521,15 @@ all_items.sort(
     reverse=True,
 )
 
-    seen, out = set(), []
-    for it in all_items:
-        lk = it.get("link", "")
-        if lk and lk not in seen:
-            seen.add(lk)
-            out.append(it)
-        if len(out) >= limit:
-            break
-    return out
+seen, out = set(), []
+for it in all_items:
+    lk = it.get("link", "")
+    if lk and lk not in seen:
+        seen.add(lk)
+        out.append(it)
+    if len(out) >= limit:
+        break
+return out
 
 
 # =============================================================================
