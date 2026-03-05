@@ -455,7 +455,7 @@ def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
     except Exception:
         return items
 
-    channel = root.find("channel")
+    channel = root.find("channel") or root.find(".//channel")
     if channel is None:
         return items
 
