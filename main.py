@@ -545,9 +545,9 @@ def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
         reverse=True,
     )
 
- seen, out = set(), []
+    seen, out = set(), []
 
-for it in all_items:
+    for it in all_items:
     lk = it.get("link", "")
 
     if "news.google.com/" in lk:
@@ -561,7 +561,7 @@ for it in all_items:
     if len(out) >= limit:
         break
 
-return out
+    return out
 
 
 # =============================================================================
