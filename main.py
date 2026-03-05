@@ -496,6 +496,28 @@ def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
         if title and link:
             items.append({"title": title, "link": link, "source": channel_title, "published": pub})
     return items
+    # --- Google News redirect resolver (cache) ---
+_GOOGLE_REDIRECT_CACHE: Dict[str, str] = {}
+
+def resolve_redirect(url: str, timeout: int = 8) -> str:
+    if not url:
+        return url
+    if url in _GOOGLE_REDIRECT_CACHE:
+        return _GOOGLE_REDIRECT_CACHE[url]
+
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.2)"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            final_url = resp.geturl() or url
+    except Exception:
+        final_url = url
+
+    _GOOGLE_REDIRECT_CACHE[url] = final_url
+    return final_url
 def _dt(pub: str):
         try:
             return parsedate_to_datetime(pub) if pub else None
@@ -523,16 +545,23 @@ def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
         reverse=True,
     )
 
-    seen, out = set(), []
-    for it in all_items:
-        lk = it.get("link", "")
-        if lk and lk not in seen:
-            seen.add(lk)
-            out.append(it)
-        if len(out) >= limit:
-            break
+ seen, out = set(), []
 
-    return out
+for it in all_items:
+    lk = it.get("link", "")
+
+    if "news.google.com/" in lk:
+        lk = resolve_redirect(lk)
+
+    if lk and lk not in seen:
+        seen.add(lk)
+        it["link"] = lk
+        out.append(it)
+
+    if len(out) >= limit:
+        break
+
+return out
 
 
 # =============================================================================
