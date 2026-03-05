@@ -546,20 +546,19 @@ def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
     )
 
     seen, out = set(), []
-
     for it in all_items:
-    lk = it.get("link", "")
+        lk = it.get("link", "")
 
-    if "news.google.com/" in lk:
-        lk = resolve_redirect(lk)
+        if "news.google.com/" in lk:
+            lk = resolve_redirect(lk)
 
-    if lk and lk not in seen:
-        seen.add(lk)
-        it["link"] = lk
-        out.append(it)
+        if lk and lk not in seen:
+            seen.add(lk)
+            it["link"] = lk
+            out.append(it)
 
-    if len(out) >= limit:
-        break
+        if len(out) >= limit:
+            break
 
     return out
 
