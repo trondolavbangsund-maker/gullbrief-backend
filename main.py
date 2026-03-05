@@ -29,9 +29,13 @@ from fastapi.responses import (
     Response,
     RedirectResponse,
 )
+from fastapi.staticfiles import StaticFiles
 
 # =============================================================================
-# Gullbrief main.py (SEO + Premium + Stripe safe) – v3.1
+# Gullbrief main.py (SEO + Premium + Stripe safe) – v3.2
+# - Favicon/logo via /static (favicon on browser tab)
+# - Daily macro email + daily premium email + signal-change email
+# - Safe DB migration: adds last_macro_sent_date
 # =============================================================================
 
 # =============================================================================
@@ -48,7 +52,7 @@ CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "900"))
 
 RSS_FEEDS_ENV = os.getenv(
     "RSS_FEEDS",
-    "https://www.investing.com/rss/news_11.rss,https://feeds.finance.yahoo.com/rss/2.0/headline?s=GC%3DF&region=US&lang=en-US,https://www.investing.com/rss/news_285.rss"
+    "https://www.investing.com/rss/news_11.rss,https://feeds.finance.yahoo.com/rss/2.0/headline?s=GC%3DF&region=US&lang=en-US,https://www.investing.com/rss/news_285.rss",
 )
 RSS_FEEDS = [u.strip() for u in RSS_FEEDS_ENV.split(",") if u.strip()]
 
@@ -93,10 +97,10 @@ SITEMAP_ARCHIVE_DAYS = int(os.getenv("SITEMAP_ARCHIVE_DAYS", "45"))  # include l
 FEED_ITEMS = int(os.getenv("FEED_ITEMS", "20"))  # RSS items
 
 # =============================================================================
-# App + CORS
+# App + CORS + Static
 # =============================================================================
 
-app = FastAPI(title=f"{APP_NAME} Backend", version="3.1", docs_url=None, redoc_url=None)
+app = FastAPI(title=f"{APP_NAME} Backend", version="3.2", docs_url=None, redoc_url=None)
 
 origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
@@ -112,9 +116,20 @@ app.add_middleware(
 # Optional: proxy headers (Render) – safe to ignore if unavailable
 try:
     from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware  # type: ignore
-
     app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 except Exception:
+    pass
+
+# Static for favicon/logo:
+# Create folder "static" in repo and add at least:
+#   static/favicon.ico
+# Optional:
+#   static/apple-touch-icon.png
+#   static/logo.png (if you want)
+try:
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+except Exception:
+    # ok if folder isn't present locally yet
     pass
 
 
@@ -149,11 +164,9 @@ def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: i
     return json.loads(data.decode("utf-8"))
 
 def http_get_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> str:
-    import requests
     h = headers or {}
-    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/3.1)")
+    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/3.2)")
     h.setdefault("Accept", "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1")
-
     r = requests.get(url, headers=h, timeout=timeout, allow_redirects=True)
     r.raise_for_status()
     return r.text
@@ -244,6 +257,13 @@ def _db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     return conn
 
+def _try_add_column(conn: sqlite3.Connection, table: str, column_sql: str) -> None:
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_sql}")
+        conn.commit()
+    except Exception:
+        pass
+
 def init_db() -> None:
     conn = _db()
     cur = conn.cursor()
@@ -267,6 +287,7 @@ def init_db() -> None:
         created_at TEXT NOT NULL,
         last_notified_signal TEXT,
         last_daily_sent_date TEXT,
+        last_macro_sent_date TEXT,
         UNIQUE(api_key, email)
       )
     """)
@@ -278,6 +299,9 @@ def init_db() -> None:
         created_at TEXT NOT NULL
       )
     """)
+
+    # Migration for existing DBs
+    _try_add_column(conn, "email_subscriptions", "last_macro_sent_date TEXT")
 
     conn.commit()
     conn.close()
@@ -358,7 +382,7 @@ class YahooPrice:
     ts: str
 
 def fetch_yahoo_chart(symbol: str, range_: str, interval: str) -> Dict[str, Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.1)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.2)"}
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
     return http_get_json(url, headers=headers)
 
@@ -475,7 +499,7 @@ def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
 def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.1)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.2)"}
     all_items: List[Dict[str, str]] = []
     for feed_url in RSS_FEEDS:
         try:
@@ -514,7 +538,6 @@ def summarize_with_openai(headlines: List[Dict[str, str]], signal_state: str, si
     )
     try:
         from openai import OpenAI  # type: ignore
-
         client = OpenAI(api_key=OPENAI_API_KEY)
         resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
         return (resp.output_text or "").strip()
@@ -583,20 +606,11 @@ def premium_report_ai(
 
     try:
         from openai import OpenAI  # type: ignore
-
         client = OpenAI(api_key=OPENAI_API_KEY)
         resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
         return (resp.output_text or "").strip()
     except Exception:
-        return premium_report_ai(
-            headlines=headlines,
-            signal_state=signal_state,
-            signal_reason=signal_reason,
-            price_usd=price_usd,
-            change_pct=change_pct,
-            rsi14=rsi14,
-            trend_score=trend_score,
-        )
+        return ""
 
 
 # =============================================================================
@@ -624,7 +638,7 @@ def build_brief() -> Dict[str, Any]:
 
     return {
         "updated_at": yp.ts,
-        "version": "3.1",
+        "version": "3.2",
         "symbol": yp.symbol,
         "currency": yp.currency,
         "price_usd": yp.last,
@@ -653,7 +667,7 @@ def get_cached_brief(force_refresh: bool) -> Dict[str, Any]:
 def map_to_public_today(data: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.1"),
+        "version": data.get("version", "3.2"),
         "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
         "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
         "macro": {"summary_short": data.get("macro_summary", "")},
@@ -719,7 +733,7 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
 
     rec = {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.1"),
+        "version": data.get("version", "3.2"),
         "symbol": data.get("symbol"),
         "price_usd": data.get("price_usd"),
         "change_pct": data.get("change_pct"),
@@ -996,6 +1010,12 @@ def html_shell(
 
     twitter_site_meta = f'<meta name="twitter:site" content="{_escape_html(TWITTER_SITE)}" />' if TWITTER_SITE else ""
 
+    # favicon (browser tab)
+    favicon_meta = (
+        '<link rel="icon" href="/static/favicon.ico" sizes="any" />'
+        '<link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />'
+    )
+
     head = (
         '<meta charset="utf-8" />'
         '<meta name="viewport" content="width=device-width,initial-scale=1" />'
@@ -1017,6 +1037,7 @@ def html_shell(
         f'<meta name="twitter:description" content="{_escape_html(description)}" />'
         f'<meta name="twitter:image" content="{og_image}" />'
         + twitter_site_meta
+        + favicon_meta
         + jsonld_website(base)
         + jsonld_article(base, title, description, path, date_published=article_date)
     )
@@ -1054,7 +1075,7 @@ def health() -> Dict[str, Any]:
         "stripe_price_id_prefix": (e["price_id"][:10] + "...") if e["price_id"] else "",
         "stripe_webhook_secret_set": bool(e["webhook_secret"]),
         "brevo_enabled": brevo_configured(),
-        "version": "3.1",
+        "version": "3.2",
     }
 
 @app.get("/api/debug/stripe")
@@ -1071,6 +1092,18 @@ def debug_stripe(request: Request) -> Dict[str, Any]:
         "cancel_url": cancel,
         "webhook_secret_set": bool(e["webhook_secret"]),
     }
+
+@app.get("/api/debug/rss2")
+def api_debug_rss2() -> Any:
+    out = []
+    for feed_url in RSS_FEEDS:
+        try:
+            xml_text = http_get_text(feed_url, timeout=20)
+            items = parse_rss(xml_text, fallback_source=domain_of(feed_url) or "RSS")
+            out.append({"url": feed_url, "ok": True, "bytes": len(xml_text.encode("utf-8", errors="ignore")), "items": len(items)})
+        except Exception as e:
+            out.append({"url": feed_url, "ok": False, "error": str(e)})
+    return out
 
 @app.get("/api/brief")
 def api_brief(force_refresh: bool = False):
@@ -1215,6 +1248,68 @@ def api_check_signal(admin_key: str = ""):
 
     conn.close()
     return {"ok": True, "sent": sent, "signal": sig}
+
+@app.get("/api/tasks/send-daily-macro")
+def api_send_daily_macro(admin_key: str = ""):
+    """
+    Daily macro email (macro_summary + top headlines) to all active subscribers.
+    Uses last_macro_sent_date to avoid duplicates per day.
+    """
+    if admin_key != ADMIN_API_KEY:
+        return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED", "message": "admin_key feil."})
+
+    if not brevo_configured():
+        return JSONResponse(status_code=500, content={"error": "BREVO_NOT_CONFIGURED"})
+
+    try:
+        raw = get_cached_brief(force_refresh=True)
+    except Exception:
+        raw = _read_last_snapshot() or {}
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    sig = str(raw.get("signal") or "neutral").upper()
+    macro = (raw.get("macro_summary") or "").strip()
+    headlines = raw.get("headlines") or []
+
+    top_lines = []
+    for h in headlines[:5]:
+        t = (h.get("title") or "").strip()
+        if t:
+            top_lines.append(f"- {t}")
+    top_block = "\n".join(top_lines) if top_lines else "(Ingen overskrifter tilgjengelig)"
+
+    subject = f"{APP_NAME} – Daglig makro ({today}) – {sig}"
+    body = (
+        f"{APP_NAME} – daglig makrosammendrag\n"
+        f"Dato: {today}\n"
+        f"Signal: {sig}\n\n"
+        f"{macro if macro else 'Ingen makrotekst tilgjengelig i dag.'}\n\n"
+        "Utvalgte overskrifter:\n"
+        f"{top_block}\n\n"
+        "Arkiv: /archive\n"
+        "(Automatisk utsendelse.)\n"
+    )
+
+    conn = _db()
+    rows = conn.execute("SELECT id, api_key, email, last_macro_sent_date FROM email_subscriptions").fetchall()
+    sent = 0
+
+    for row in rows:
+        if not is_valid_key(row["api_key"]):
+            continue
+        if (row["last_macro_sent_date"] or "") == today:
+            continue
+
+        try:
+            send_email(row["email"], subject, body)
+            conn.execute("UPDATE email_subscriptions SET last_macro_sent_date=? WHERE id=?", (today, row["id"]))
+            conn.commit()
+            sent += 1
+        except Exception:
+            continue
+
+    conn.close()
+    return {"ok": True, "sent": sent, "date": today}
 
 @app.get("/api/tasks/send-daily-premium")
 def api_send_daily_premium(admin_key: str = ""):
@@ -2044,7 +2139,7 @@ ARCHIVE_BODY_INNER = """
       });
       const data = await res.json();
       if(!res.ok){ setStatus(data?.message || ("HTTP "+res.status)); return; }
-      setStatus("E-postvarsel aktivert ✅ (sendes ved signalendring + daglig premium)");
+      setStatus("E-postvarsel aktivert ✅ (sendes ved signalendring + daglig premium + daglig makro)");
     }catch(e){
       setStatus("Feil: " + e);
     }
@@ -2196,6 +2291,7 @@ def archive_page(request: Request) -> HTMLResponse:
             pass
 
         dates = get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)
+
     links = []
     for d in dates[:60]:
         links.append(f'<li><a href="/archive/{_escape_html(d)}">Arkiv {_escape_html(d)}</a></li>')
@@ -2357,4 +2453,15 @@ def page_gullpris_signal(request: Request) -> HTMLResponse:
         desc="Gullpris signal (bullish/bearish/neutral) og forklaring. Premium viser signalhistorikk og 7d/30d etter signal.",
         h1="Gullpris signal",
         intro="Se dagens signal og hvorfor det er satt. Premium viser historikk, 7d/30d og treffsikkerhet (siste 30).",
+    )
+
+@app.get("/gullpris", response_class=HTMLResponse)
+def page_gullpris(request: Request) -> HTMLResponse:
+    return seo_landing(
+        request,
+        path="/gullpris",
+        title="Gullpris i dag – pris, signal og relevante nyheter",
+        desc="Gullpris i dag: pris (USD), signal og de viktigste nyhetene som påvirker gull.",
+        h1="Gullpris i dag",
+        intro="Dagens pris og signal, med korte drivere og relevante nyheter.",
     )
