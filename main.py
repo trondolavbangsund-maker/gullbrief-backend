@@ -46,7 +46,10 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip()
 YAHOO_SYMBOL = os.getenv("YAHOO_SYMBOL", "GC=F").strip()
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "900"))
 
-RSS_FEEDS_ENV = os.getenv("RSS_FEEDS", "https://www.fxstreet.com/rss/news")
+RSS_FEEDS_ENV = os.getenv(
+    "RSS_FEEDS",
+    "https://subscriptions.fxstreet.com/RSS/News.aspx,https://www.fxstreet.com/rss/news"
+)
 RSS_FEEDS = [u.strip() for u in RSS_FEEDS_ENV.split(",") if u.strip()]
 
 HISTORY_PATH = os.getenv("HISTORY_PATH", "data/history.jsonl").strip()
