@@ -48,7 +48,7 @@ CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "900"))
 
 RSS_FEEDS_ENV = os.getenv(
     "RSS_FEEDS",
-    "https://www.investing.com/rss/news_11.rss"
+    "https://www.investing.com/rss/news_11.rss,https://feeds.finance.yahoo.com/rss/2.0/headline?s=GC%3DF&region=US&lang=en-US,https://www.investing.com/rss/news_285.rss"
 )
 RSS_FEEDS = [u.strip() for u in RSS_FEEDS_ENV.split(",") if u.strip()]
 
