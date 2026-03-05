@@ -487,7 +487,8 @@ def compute_signal(symbol: str) -> Tuple[str, Dict[str, Any]]:
 def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
     items: List[Dict[str, str]] = []
     try:
-        root = ET.fromstring(xml_text)
+        xml_bytes = xml_text.encode("utf-8", errors="ignore")
+        root = ET.fromstring(xml_bytes)
     except Exception:
         return items
 
