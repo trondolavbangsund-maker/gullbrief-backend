@@ -496,7 +496,13 @@ def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
         if title and link:
             items.append({"title": title, "link": link, "source": channel_title, "published": pub})
     return items
+def _dt(pub: str):
+        try:
+            return parsedate_to_datetime(pub) if pub else None
+        except Exception:
+            return None
 
+            
 def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
@@ -508,11 +514,6 @@ def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
             all_items.extend(parse_rss(xml_text, fallback_source=domain_of(feed_url) or "RSS"))
         except Exception:
             continue
-def _dt(pub: str):
-        try:
-            return parsedate_to_datetime(pub) if pub else None
-        except Exception:
-            return None
 
 # Sorter: nyeste først (items uten dato havner nederst)
 all_items.sort(
