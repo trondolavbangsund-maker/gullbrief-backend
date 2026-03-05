@@ -526,9 +526,9 @@ def resolve_redirect(url: str, timeout: int = 8) -> str:
         except Exception:
             final_url = url
 
-        _GOOGLE_REDIRECT_CACHE[url] = final_url
-         return final_url
-         
+    _GOOGLE_REDIRECT_CACHE[url] = final_url
+    return final_url
+
 def _dt(pub: str):
         try:
             return parsedate_to_datetime(pub) if pub else None
