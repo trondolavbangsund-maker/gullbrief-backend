@@ -179,9 +179,9 @@ def get_base_url(request: Request) -> str:
     host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
     return f"{proto}://{host}".rstrip("/")
 
-def _dt(s: str) -> Optional[datetime]:
+ddef _dt(pub: str):
     try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return parsedate_to_datetime(pub) if pub else None
     except Exception:
         return None
 
