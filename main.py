@@ -505,19 +505,30 @@ def resolve_redirect(url: str, timeout: int = 8) -> str:
     if url in _GOOGLE_REDIRECT_CACHE:
         return _GOOGLE_REDIRECT_CACHE[url]
 
+    final_url = url
     try:
         req = urllib.request.Request(
             url,
             headers={"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.2)"},
-            method="GET",
+            method="HEAD",
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             final_url = resp.geturl() or url
     except Exception:
-        final_url = url
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.2)"},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                final_url = resp.geturl() or url
+        except Exception:
+            final_url = url
 
-    _GOOGLE_REDIRECT_CACHE[url] = final_url
-    return final_url
+        _GOOGLE_REDIRECT_CACHE[url] = final_url
+         return final_url
+         
 def _dt(pub: str):
         try:
             return parsedate_to_datetime(pub) if pub else None
