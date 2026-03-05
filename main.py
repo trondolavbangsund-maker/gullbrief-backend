@@ -146,13 +146,14 @@ def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: i
     return json.loads(data.decode("utf-8"))
 
 def http_get_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> str:
-    req = urllib.request.Request(url, headers=headers or {})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = resp.read()
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return data.decode("latin-1", errors="replace")
+    import requests
+    h = headers or {}
+    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/3.1)")
+    h.setdefault("Accept", "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1")
+
+    r = requests.get(url, headers=h, timeout=timeout, allow_redirects=True)
+    r.raise_for_status()
+    return r.text
 
 def get_base_url(request: Request) -> str:
     if BASE_URL:
@@ -1649,7 +1650,7 @@ INDEX_BODY_TEMPLATE = """
 
       <h2 style="margin-top:14px">Makro i dag</h2>
       <p class="muted" id="macro">–</p>
-      
+
       <p class="muted">
       Se også vår <a href="/gullpris-prognose">gullpris prognose</a> for scenario de neste dagene.
       </p>
