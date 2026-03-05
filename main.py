@@ -98,39 +98,6 @@ FEED_ITEMS = int(os.getenv("FEED_ITEMS", "20"))  # RSS items
 
 app = FastAPI(title=f"{APP_NAME} Backend", version="3.1", docs_url=None, redoc_url=None)
 
-@app.get("/api/debug/rss")
-def debug_rss():
-    try:
-        feed_url = RSS_FEEDS[0] if RSS_FEEDS else ""
-        xml_text = http_get_text(
-            feed_url,
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Accept": "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1",
-            },
-            timeout=20,
-        )
-
-        info = {
-            "feed_url": feed_url,
-            "bytes": len(xml_text) if isinstance(xml_text, str) else None,
-            "start": (xml_text[:200] if isinstance(xml_text, str) else str(type(xml_text))),
-        }
-
-        try:
-            root = ET.fromstring(xml_text)
-            channel = root.find("channel") or root.find(".//channel")
-            info["root_tag"] = getattr(root, "tag", None)
-            info["channel_found"] = channel is not None
-            info["items_found"] = len(channel.findall("item")) if channel is not None else 0
-        except Exception as e:
-            info["parse_error"] = str(e)
-
-        return info
-
-    except Exception as e:
-        return {"outer_error": str(e)}
-
 origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
 
