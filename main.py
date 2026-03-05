@@ -510,9 +510,9 @@ def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
             continue
 def _dt(pub: str):
         try:
-        return parsedate_to_datetime(pub) if pub else None
+            return parsedate_to_datetime(pub) if pub else None
         except Exception:
-        return None
+            return None
 
 # Sorter: nyeste først (items uten dato havner nederst)
 all_items.sort(
