@@ -33,10 +33,12 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 
 # =============================================================================
-# Gullbrief main.py (SEO + Premium + Stripe safe) – v3.2
-# - Favicon/logo via /static (favicon on browser tab)
-# - Daily macro email + daily premium email + signal-change email
-# - Safe DB migration: adds last_macro_sent_date
+# Gullbrief main.py – v3.3
+# - Skiller tydelig mellom: Analyse / Prognose / XAUUSD (egen tekst per side)
+# - Ett OpenAI-kall som returnerer 3 tekster + premium ekstra
+# - Premium får mer: premium_insight lagres i historikk + brukes i premium-rapport
+# - Stabil RSS (uten Google redirect hacks)
+# - Beholder Stripe/Brevo/SEO/Arkiv/Tasks-endpoints
 # =============================================================================
 
 # =============================================================================
@@ -53,7 +55,11 @@ CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "900"))
 
 RSS_FEEDS_ENV = os.getenv(
     "RSS_FEEDS",
-    "https://www.reuters.com/markets/rss,https://www.kitco.com/rss/news,https://feeds.bloomberg.com/markets/news.rss,https://feeds.finance.yahoo.com/rss/2.0/headline?s=GC%3DF&region=US&lang=en-US,https://www.investing.com/rss/news_11.rss"
+    "https://www.reuters.com/markets/rss,"
+    "https://www.kitco.com/rss/news,"
+    "https://feeds.bloomberg.com/markets/news.rss,"
+    "https://feeds.finance.yahoo.com/rss/2.0/headline?s=GC%3DF&region=US&lang=en-US,"
+    "https://www.investing.com/rss/news_11.rss",
 )
 RSS_FEEDS = [u.strip() for u in RSS_FEEDS_ENV.split(",") if u.strip()]
 
@@ -64,7 +70,7 @@ ADMIN_API_KEY = os.getenv("PREMIUM_API_KEY", "gullbrief-dev").strip()
 
 DB_PATH = os.getenv("DB_PATH", "data/app.db").strip()
 
-# Base URL for canonical/sitemap. If empty -> detect from request headers (Render proxy friendly)
+# Base URL for canonical/sitemap. If empty -> detect from request headers
 BASE_URL = os.getenv("BASE_URL", "").strip().rstrip("/")
 
 # Brevo Transactional API
@@ -77,12 +83,8 @@ STRIPE_SUCCESS_URL_DEFAULT = os.getenv("STRIPE_SUCCESS_URL", "").strip()
 STRIPE_CANCEL_URL_DEFAULT = os.getenv("STRIPE_CANCEL_URL", "").strip()
 
 # Google Search Console verification
-# Can be set as:
-#  - "google-site-verification=XXXXX"
-#  - or just "XXXXX"
 GOOGLE_SITE_VERIFICATION = os.getenv("GOOGLE_SITE_VERIFICATION", "").strip()
 if not GOOGLE_SITE_VERIFICATION:
-    # keep backwards safe default if you had it baked earlier
     GOOGLE_SITE_VERIFICATION = "google-site-verification=W5dv0qhSwRLBDZH6YcVwJtqybjReTSmbjggqvhTJvVI"
 
 if GOOGLE_SITE_VERIFICATION.startswith("google-site-verification="):
@@ -91,17 +93,17 @@ else:
     GOOGLE_SITE_VERIFICATION_CONTENT = GOOGLE_SITE_VERIFICATION
 
 # Optional: Twitter handle for meta
-TWITTER_SITE = os.getenv("TWITTER_SITE", "").strip()  # e.g. "@gullbrief"
+TWITTER_SITE = os.getenv("TWITTER_SITE", "").strip()
 
 # SEO knobs
-SITEMAP_ARCHIVE_DAYS = int(os.getenv("SITEMAP_ARCHIVE_DAYS", "45"))  # include last N days in sitemap
-FEED_ITEMS = int(os.getenv("FEED_ITEMS", "20"))  # RSS items
+SITEMAP_ARCHIVE_DAYS = int(os.getenv("SITEMAP_ARCHIVE_DAYS", "45"))
+FEED_ITEMS = int(os.getenv("FEED_ITEMS", "20"))
 
 # =============================================================================
 # App + CORS + Static
 # =============================================================================
 
-app = FastAPI(title=f"{APP_NAME} Backend", version="3.2", docs_url=None, redoc_url=None)
+app = FastAPI(title=f"{APP_NAME} Backend", version="3.3", docs_url=None, redoc_url=None)
 
 origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
@@ -114,23 +116,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Optional: proxy headers (Render) – safe to ignore if unavailable
 try:
     from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware  # type: ignore
+
     app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 except Exception:
     pass
 
-# Static for favicon/logo:
-# Create folder "static" in repo and add at least:
-#   static/favicon.ico
-# Optional:
-#   static/apple-touch-icon.png
-#   static/logo.png (if you want)
 try:
     app.mount("/static", StaticFiles(directory="static"), name="static")
 except Exception:
-    # ok if folder isn't present locally yet
     pass
 
 
@@ -166,7 +161,7 @@ def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: i
 
 def http_get_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> str:
     h = headers or {}
-    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/3.2)")
+    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/3.3)")
     h.setdefault("Accept", "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1")
     r = requests.get(url, headers=h, timeout=timeout, allow_redirects=True)
     r.raise_for_status()
@@ -179,17 +174,21 @@ def get_base_url(request: Request) -> str:
     host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
     return f"{proto}://{host}".rstrip("/")
 
-def _dt(pub: str):
+def dt_from_rss(pub: str) -> Optional[datetime]:
     try:
         return parsedate_to_datetime(pub) if pub else None
     except Exception:
         return None
 
-def _date_yyyy_mm_dd(dt_iso: str) -> Optional[str]:
-    t = _dt(dt_iso)
-    if not t:
+def date_yyyy_mm_dd_from_iso_or_rss(dt_str: str) -> Optional[str]:
+    t = dt_from_rss(dt_str)
+    if t:
+        return t.date().isoformat()
+    # fallback: try ISO
+    try:
+        return datetime.fromisoformat(dt_str.replace("Z", "+00:00")).date().isoformat()
+    except Exception:
         return None
-    return t.date().isoformat()
 
 def _escape_html(s: str) -> str:
     return (
@@ -236,14 +235,12 @@ def require_stripe(request: Optional[Request] = None) -> Dict[str, str]:
         raise RuntimeError("STRIPE_NOT_CONFIGURED: Sett STRIPE_SECRET_KEY og STRIPE_PRICE_ID")
     stripe.api_key = e["secret_key"]
 
-    # If success/cancel not set, derive from base_url
     if request:
         base = get_base_url(request)
         if not e["success_url"]:
             e["success_url"] = f"{base}/success"
         if not e["cancel_url"]:
             e["cancel_url"] = f"{base}/premium"
-
     return e
 
 
@@ -301,9 +298,7 @@ def init_db() -> None:
       )
     """)
 
-    # Migration for existing DBs
     _try_add_column(conn, "email_subscriptions", "last_macro_sent_date TEXT")
-
     conn.commit()
     conn.close()
 
@@ -383,7 +378,7 @@ class YahooPrice:
     ts: str
 
 def fetch_yahoo_chart(symbol: str, range_: str, interval: str) -> Dict[str, Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.2)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.3)"}
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
     return http_get_json(url, headers=headers)
 
@@ -489,6 +484,7 @@ def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
         return items
 
     channel_title = (channel.findtext("title") or fallback_source).strip() or fallback_source
+
     for item in channel.findall("item"):
         title = (item.findtext("title") or "").strip()
         link = (item.findtext("link") or "").strip()
@@ -496,51 +492,12 @@ def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
         if title and link:
             items.append({"title": title, "link": link, "source": channel_title, "published": pub})
     return items
-    # --- Google News redirect resolver (cache) ---
-_GOOGLE_REDIRECT_CACHE: Dict[str, str] = {}
 
-def resolve_redirect(url: str, timeout: int = 8) -> str:
-    if not url:
-        return url
-    if url in _GOOGLE_REDIRECT_CACHE:
-        return _GOOGLE_REDIRECT_CACHE[url]
-
-    final_url = url
-    try:
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.2)"},
-            method="HEAD",
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            final_url = resp.geturl() or url
-    except Exception:
-        try:
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.2)"},
-                method="GET",
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                final_url = resp.geturl() or url
-        except Exception:
-            final_url = url
-
-    _GOOGLE_REDIRECT_CACHE[url] = final_url
-    return final_url
-
-def _dt(pub: str):
-        try:
-            return parsedate_to_datetime(pub) if pub else None
-        except Exception:
-            return None
-
-            
 def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
 
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.2)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.3)"}
     all_items: List[Dict[str, str]] = []
 
     for feed_url in RSS_FEEDS:
@@ -550,22 +507,27 @@ def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
         except Exception:
             continue
 
-    # Sorter: nyeste først (items uten dato havner nederst)
-    all_items.sort(
-        key=lambda x: (_dt(x.get("published", "")) is not None, _dt(x.get("published", ""))),
-        reverse=True,
-    )
+    # Nyeste først (items uten dato nederst)
+    def _key(x: Dict[str, str]) -> Tuple[int, float]:
+        d = dt_from_rss(x.get("published", "") or "")
+        if not d:
+            return (0, 0.0)
+        return (1, d.timestamp())
+
+    all_items.sort(key=_key, reverse=True)
 
     seen, out = set(), []
     for it in all_items:
-        lk = resolve_redirect(it.get("link", ""))
+        lk = (it.get("link") or "").strip()
+        if not lk:
+            continue
 
-        if "news.google.com/" in lk:
-            lk = resolve_redirect(lk)
+        # Filtrer bort Bloomberg "videos" (gir ofte støy)
+        if "/news/videos/" in lk:
+            continue
 
-        if lk and lk not in seen:
+        if lk not in seen:
             seen.add(lk)
-            it["link"] = lk
             out.append(it)
 
         if len(out) >= limit:
@@ -575,31 +537,11 @@ def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
 
 
 # =============================================================================
-# OpenAI summaries (optional)
+# OpenAI: 3 tekster + premium ekstra (ett kall)
 # =============================================================================
 
-def summarize_with_openai(headlines: List[Dict[str, str]], signal_state: str, signal_reason: str) -> str:
-    if not headlines or not OPENAI_API_KEY:
-        return ""
-    titles = [h.get("title", "").strip() for h in headlines if h.get("title")][:10]
-    if not titles:
-        return ""
-    prompt = (
-        "Du er Gullbrief Research. Skriv et kort, nøkternt makrosammendrag (5–7 linjer) "
-        "om hva som kan påvirke gullprisen. Ingen hype. Ingen emojis. Ingen investeringsråd.\n\n"
-        f"Signal akkurat nå: {signal_state.upper()}\n"
-        f"Kort årsak (indikator): {signal_reason}\n\n"
-        "Nyhetsoverskrifter:\n- " + "\n- ".join(titles) + "\n\nSammendrag:"
-    )
-    try:
-        from openai import OpenAI  # type: ignore
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
-        return (resp.output_text or "").strip()
-    except Exception:
-        return ""
-
-def premium_report_ai(
+def summarize_bundle_with_openai(
+    *,
     headlines: List[Dict[str, str]],
     signal_state: str,
     signal_reason: str,
@@ -607,65 +549,113 @@ def premium_report_ai(
     change_pct: Optional[float],
     rsi14: Optional[float],
     trend_score: Optional[int],
-) -> str:
+) -> Dict[str, str]:
+    """
+    Returns dict with keys: analysis, forecast, xauusd, premium
+    """
+    out = {"analysis": "", "forecast": "", "xauusd": "", "premium": ""}
+
+    if not OPENAI_API_KEY or not headlines:
+        return out
+
     titles = [h.get("title", "").strip() for h in headlines if h.get("title")][:12]
     if not titles:
-        titles = ["(Ingen nyhetsoverskrifter tilgjengelig)"]
+        return out
 
-    # Fallback if no OpenAI key
+    price_line = f"{price_usd:.2f} USD" if isinstance(price_usd, (int, float)) else "ukjent"
+    chg_line = f"{change_pct:+.2f}%" if isinstance(change_pct, (int, float)) else "ukjent"
+    rsi_line = f"{rsi14:.1f}" if isinstance(rsi14, (int, float)) else "ukjent"
+    ts_line = f"{trend_score}" if isinstance(trend_score, int) else "ukjent"
+
+    prompt = (
+        f"Du er {APP_NAME}. Du skal skrive tre forskjellige tekster om gull basert på overskriftene.\n"
+        "Viktig:\n"
+        "- Norsk, nøkternt, ingen emojis, ingen investeringsråd.\n"
+        "- Ikke finn opp fakta. Hvis overskriftene ikke støtter noe, si 'uklart' eller 'ikke bekreftet i overskriftene'.\n"
+        "- Svar KUN som gyldig JSON med nøyaktig disse nøklene:\n"
+        '  {"analysis":"...", "forecast":"...", "xauusd":"...", "premium":"..."}\n\n'
+        "Kontekst:\n"
+        f"- Symbol: {YAHOO_SYMBOL}\n"
+        f"- Pris: {price_line}\n"
+        f"- Døgnendring: {chg_line}\n"
+        f"- RSI(14): {rsi_line}\n"
+        f"- Trend score: {ts_line}/100\n"
+        f"- Signal: {signal_state.upper()}\n"
+        f"- Indikator-årsak: {signal_reason}\n\n"
+        "Overskrifter:\n- " + "\n- ".join(titles) + "\n\n"
+        "Skriv:\n"
+        "- analysis: 5–7 linjer, forklar hva som driver gull nå og hvorfor.\n"
+        "- forecast: 24–72t scenario: base/bull/bear + triggere, 6–10 linjer.\n"
+        "- xauusd: spot gull vs USD: USD/DXY, renter, risk-on/off, 5–7 linjer.\n"
+        "- premium: 8–14 linjer. Mer konkret, med 'Hva kan endre bildet' (3 punkt). Ikke prisnivåer med falsk presisjon.\n"
+    )
+
+    try:
+        from openai import OpenAI  # type: ignore
+
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
+        txt = (resp.output_text or "").strip()
+
+        # Robust JSON parse (noen ganger kommer det med tekst rundt)
+        # Finn første { og siste }
+        i = txt.find("{")
+        j = txt.rfind("}")
+        if i >= 0 and j > i:
+            txt = txt[i : j + 1]
+
+        data = json.loads(txt)
+
+        for k in ("analysis", "forecast", "xauusd", "premium"):
+            v = data.get(k)
+            if isinstance(v, str):
+                out[k] = v.strip()
+
+        return out
+    except Exception:
+        return out
+
+
+# =============================================================================
+# Premium report AI (bruker premium-feltet fra bundle)
+# =============================================================================
+
+def premium_report_ai_from_bundle(
+    *,
+    bundle: Dict[str, str],
+    signal_state: str,
+    signal_reason: str,
+    price_usd: Optional[float],
+    change_pct: Optional[float],
+    rsi14: Optional[float],
+    trend_score: Optional[int],
+    headlines: List[Dict[str, str]],
+) -> str:
+    # Hvis OpenAI er av, lag en enkel fallback
     if not OPENAI_API_KEY:
-        bits = []
-        if isinstance(price_usd, (int, float)):
-            bits.append(f"Pris: {price_usd:.2f} USD")
-        if isinstance(change_pct, (int, float)):
-            bits.append(f"Døgnendring: {change_pct:+.2f}%")
-        if isinstance(rsi14, (int, float)):
-            bits.append(f"RSI(14): {rsi14:.1f}")
-        if isinstance(trend_score, int):
-            bits.append(f"Trend score: {trend_score}/100")
-        header = " | ".join(bits) if bits else "Dagens nøkkeltall: (ukjent)"
+        titles = [h.get("title", "").strip() for h in headlines if h.get("title")][:8]
+        price_line = f"Pris: {price_usd:.2f} USD" if isinstance(price_usd, (int, float)) else "Pris: (ukjent)"
+        chg_line = f"Døgnendring: {change_pct:+.2f}%" if isinstance(change_pct, (int, float)) else "Døgnendring: (ukjent)"
+        rsi_line = f"RSI(14): {rsi14:.1f}" if isinstance(rsi14, (int, float)) else "RSI(14): (ukjent)"
+        ts_line = f"Trend score: {trend_score}/100" if isinstance(trend_score, int) else "Trend score: (ukjent)"
         return (
             f"{APP_NAME} Premium ({datetime.now(timezone.utc).date().isoformat()})\n"
-            f"{header}\n"
+            f"{price_line} | {chg_line} | {rsi_line} | {ts_line}\n"
             f"Signal: {signal_state.upper()} ({signal_reason})\n\n"
-            "Nyhetsdriver (utdrag):\n- " + "\n- ".join(titles[:6]) + "\n\n"
+            "Nyhetsdriver (utdrag):\n- " + ("\n- ".join(titles) if titles else "(Ingen)") + "\n\n"
             "Hva kan endre bildet (24–72t):\n"
             "- USD/renter beveger seg raskt\n"
             "- Inflasjon-/vekstdata overrasker\n"
             "- Geopolitikk/risikoappetitt skifter\n"
         )
 
-    price_line = f"Pris: {price_usd:.2f} USD" if isinstance(price_usd, (int, float)) else "Pris: (ukjent)"
-    chg_line = f"Døgnendring: {change_pct:+.2f}%" if isinstance(change_pct, (int, float)) else "Døgnendring: (ukjent)"
-    rsi_line = f"RSI(14): {rsi14:.1f}" if isinstance(rsi14, (int, float)) else "RSI(14): (ukjent)"
-    ts_line = f"Trend score: {trend_score}/100" if isinstance(trend_score, int) else "Trend score: (ukjent)"
+    # Med OpenAI: bruk bundle["premium"] (allerede generert)
+    txt = (bundle.get("premium") or "").strip()
+    if txt:
+        return txt
 
-    prompt = (
-        f"Du er {APP_NAME} Premium. Skriv en daglig makrokommentar om gull (GC=F) på norsk.\n"
-        "Krav:\n"
-        "- 10–16 linjer, korte avsnitt, svært nøkternt.\n"
-        "- Fokus på makro: renter, USD, inflasjon, vekst, geopolitikk, posisjonering.\n"
-        "- Ikke investeringsråd. Ikke oppfordring til kjøp/salg.\n"
-        "- Ikke bruk emojis.\n"
-        "- Avslutt med 'Hva kan endre bildet (24–72t)' med 3 punkt.\n\n"
-        f"{price_line}\n{chg_line}\n{rsi_line}\n{ts_line}\n"
-        f"Signal: {signal_state.upper()}\n"
-        f"Indikator-årsak: {signal_reason}\n\n"
-        "Nyhetsoverskrifter:\n- " + "\n- ".join(titles) + "\n\n"
-        "Svarformat:\n"
-        "Tittel: (1 linje)\n"
-        "Makro: (6–10 linjer)\n"
-        "Hva kan endre bildet (24–72t):\n"
-        "- ...\n- ...\n- ...\n"
-    )
-
-    try:
-        from openai import OpenAI  # type: ignore
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
-        return (resp.output_text or "").strip()
-    except Exception:
-        return ""
+    # fallback hvis JSON parsing feilet
+    return (bundle.get("analysis") or "").strip()
 
 
 # =============================================================================
@@ -688,12 +678,27 @@ def build_brief() -> Dict[str, Any]:
 
     headlines = fetch_headlines(limit=10)
 
-    macro_ai = summarize_with_openai(headlines, signal_state, signal_reason)
-    macro_summary = macro_ai or (" | ".join([h["title"] for h in headlines[:3] if h.get("title")]) or "Ingen nyheter tilgjengelig akkurat nå.")
+    bundle = summarize_bundle_with_openai(
+        headlines=headlines,
+        signal_state=signal_state,
+        signal_reason=signal_reason,
+        price_usd=yp.last,
+        change_pct=yp.change_pct,
+        rsi14=rsi14v,
+        trend_score=tscore,
+    )
+
+    # Fallback
+    fallback = (" | ".join([h["title"] for h in headlines[:3] if h.get("title")]) or "Ingen nyheter tilgjengelig akkurat nå.")
+
+    analysis_text = (bundle.get("analysis") or "").strip() or fallback
+    forecast_text = (bundle.get("forecast") or "").strip() or fallback
+    xauusd_text = (bundle.get("xauusd") or "").strip() or fallback
+    premium_insight = (bundle.get("premium") or "").strip()
 
     return {
         "updated_at": yp.ts,
-        "version": "3.2",
+        "version": "3.3",
         "symbol": yp.symbol,
         "currency": yp.currency,
         "price_usd": yp.last,
@@ -702,7 +707,18 @@ def build_brief() -> Dict[str, Any]:
         "signal_reason": signal_reason,
         "rsi14": rsi14v,
         "trend_score": tscore,
-        "macro_summary": macro_summary,
+
+        # Backwards compatible field:
+        "macro_summary": analysis_text,
+
+        # New distinct texts:
+        "analysis": analysis_text,
+        "forecast": forecast_text,
+        "xauusd": xauusd_text,
+
+        # Extra for paying users (also stored in history):
+        "premium_insight": premium_insight,
+
         "headlines": headlines,
     }
 
@@ -719,13 +735,24 @@ def get_cached_brief(force_refresh: bool) -> Dict[str, Any]:
     CACHE.ts = now
     return data
 
-def map_to_public_today(data: Dict[str, Any]) -> Dict[str, Any]:
+def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[str, Any]:
+    mode = (mode or "analysis").strip().lower()
+    if mode not in ("analysis", "forecast", "xauusd"):
+        mode = "analysis"
+
+    if mode == "forecast":
+        summary = data.get("forecast") or data.get("macro_summary") or ""
+    elif mode == "xauusd":
+        summary = data.get("xauusd") or data.get("macro_summary") or ""
+    else:
+        summary = data.get("analysis") or data.get("macro_summary") or ""
+
     return {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.2"),
+        "version": data.get("version", "3.3"),
         "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
         "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
-        "macro": {"summary_short": data.get("macro_summary", "")},
+        "macro": {"mode": mode, "summary_short": summary},
         "headlines": data.get("headlines", []),
     }
 
@@ -766,8 +793,8 @@ def _should_store_snapshot(new_data: Dict[str, Any], last: Optional[Dict[str, An
     last_signal = (last.get("signal") or "").lower()
     if new_signal and new_signal != last_signal:
         return True
-    new_dt = _dt(new_data.get("updated_at", "")) or datetime.now(timezone.utc)
-    last_dt = _dt(last.get("updated_at", "")) or datetime.now(timezone.utc)
+    new_dt = dt_from_rss(new_data.get("updated_at", "")) or datetime.now(timezone.utc)
+    last_dt = dt_from_rss(last.get("updated_at", "")) or datetime.now(timezone.utc)
     return new_dt.date() != last_dt.date()
 
 def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
@@ -776,19 +803,24 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
     if not _should_store_snapshot(data, last):
         return False
 
-    premium_report = premium_report_ai(
-        headlines=data.get("headlines", []),
+    # Lag premium report basert på bundle/premium_insight
+    rep = premium_report_ai_from_bundle(
+        bundle={
+            "premium": (data.get("premium_insight") or ""),
+            "analysis": (data.get("analysis") or data.get("macro_summary") or ""),
+        },
         signal_state=str(data.get("signal") or "neutral"),
         signal_reason=str(data.get("signal_reason") or ""),
         price_usd=safe_float(data.get("price_usd")),
         change_pct=safe_float(data.get("change_pct")),
         rsi14=safe_float(data.get("rsi14")),
         trend_score=data.get("trend_score") if isinstance(data.get("trend_score"), int) else None,
+        headlines=data.get("headlines", []),
     )
 
     rec = {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.2"),
+        "version": data.get("version", "3.3"),
         "symbol": data.get("symbol"),
         "price_usd": data.get("price_usd"),
         "change_pct": data.get("change_pct"),
@@ -796,8 +828,17 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
         "signal_reason": data.get("signal_reason", ""),
         "rsi14": data.get("rsi14"),
         "trend_score": data.get("trend_score"),
+
+        # behold bakoverkompatibilitet:
         "macro_summary": data.get("macro_summary", ""),
-        "premium_report": premium_report or "",
+
+        # nye:
+        "analysis": data.get("analysis", ""),
+        "forecast": data.get("forecast", ""),
+        "xauusd": data.get("xauusd", ""),
+        "premium_insight": data.get("premium_insight", ""),
+
+        "premium_report": rep or "",
         "headlines": data.get("headlines", []),
     }
 
@@ -822,7 +863,7 @@ def read_history(limit: int = 500) -> List[Dict[str, Any]]:
     return rows[-limit:]
 
 def add_forward_returns(rows: List[Dict[str, Any]], days_list=(7, 30)) -> List[Dict[str, Any]]:
-    parsed: List[Tuple[Optional[datetime], Dict[str, Any]]] = [(_dt(r.get("updated_at", "")), r) for r in rows]
+    parsed: List[Tuple[Optional[datetime], Dict[str, Any]]] = [(dt_from_rss(r.get("updated_at", "")) or None, r) for r in rows]
     for t, r in parsed:
         p0 = safe_float(r.get("price_usd"))
         if t is None or p0 is None or p0 == 0:
@@ -848,8 +889,8 @@ def signal_stats_last30(rows_newest_first: List[Dict[str, Any]]) -> Dict[str, An
         if len(sig_rows) >= 30:
             break
 
-    bullish = []
-    bearish = []
+    bullish: List[float] = []
+    bearish: List[float] = []
     hits = 0
     evals = 0
 
@@ -886,10 +927,6 @@ def latest_signal() -> str:
     return (last.get("signal") if last else "") or ""
 
 def get_archive_dates(last_n_days: int = 45) -> List[str]:
-    """
-    Returns unique YYYY-MM-DD dates found in history (newest first), limited by last_n_days window.
-    Robust against file order.
-    """
     rows = read_history(limit=2000)
     today_utc = datetime.now(timezone.utc).date()
     cutoff = today_utc - timedelta(days=max(0, last_n_days - 1))
@@ -898,7 +935,7 @@ def get_archive_dates(last_n_days: int = 45) -> List[str]:
     dates: List[str] = []
 
     for r in rows:
-        d = _date_yyyy_mm_dd(str(r.get("updated_at") or ""))
+        d = date_yyyy_mm_dd_from_iso_or_rss(str(r.get("updated_at") or ""))
         if not d:
             continue
         try:
@@ -911,13 +948,10 @@ def get_archive_dates(last_n_days: int = 45) -> List[str]:
             seen.add(d)
             dates.append(d)
 
-    dates.sort(reverse=True)  # newest first
+    dates.sort(reverse=True)
     return dates
 
 def load_snapshot_for_date(day: str) -> Optional[Dict[str, Any]]:
-    """
-    Finds the latest snapshot matching YYYY-MM-DD in JSONL.
-    """
     p = _ensure_history_dir()
     if not p.exists():
         return None
@@ -931,7 +965,7 @@ def load_snapshot_for_date(day: str) -> Optional[Dict[str, Any]]:
                 r = json.loads(line)
             except Exception:
                 continue
-            d = _date_yyyy_mm_dd(str(r.get("updated_at") or ""))
+            d = date_yyyy_mm_dd_from_iso_or_rss(str(r.get("updated_at") or ""))
             if d == day:
                 best = r
     return best
@@ -965,7 +999,6 @@ def send_email(to_email: str, subject: str, body: str) -> None:
         json=payload,
         timeout=20,
     )
-
     if r.status_code >= 400:
         raise RuntimeError(f"BREVO_HTTP_{r.status_code}: {r.text}")
 
@@ -1060,12 +1093,9 @@ def html_shell(
     canonical = f"{base}{path}"
     og_image = f"{base}/og.svg"
 
-    # SEO meta (aggressive but safe)
     robots = "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1"
-
     twitter_site_meta = f'<meta name="twitter:site" content="{_escape_html(TWITTER_SITE)}" />' if TWITTER_SITE else ""
 
-    # favicon (browser tab)
     favicon_meta = (
         '<link rel="icon" href="/static/favicon.ico" sizes="any" />'
         '<link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />'
@@ -1130,7 +1160,7 @@ def health() -> Dict[str, Any]:
         "stripe_price_id_prefix": (e["price_id"][:10] + "...") if e["price_id"] else "",
         "stripe_webhook_secret_set": bool(e["webhook_secret"]),
         "brevo_enabled": brevo_configured(),
-        "version": "3.2",
+        "version": "3.3",
     }
 
 @app.get("/api/debug/stripe")
@@ -1175,10 +1205,10 @@ def api_brief_refresh():
         return JSONResponse(status_code=500, content={"error": "BRIEF_REFRESH_FAILED", "message": str(e)})
 
 @app.get("/api/public/today")
-def api_public_today():
+def api_public_today(mode: str = "analysis"):
     try:
         raw = get_cached_brief(force_refresh=False)
-        return map_to_public_today(raw)
+        return map_to_public_today(raw, mode=mode)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": "PUBLIC_TODAY_FAILED", "message": str(e)})
 
@@ -1221,16 +1251,46 @@ def api_premium_report_today(x_api_key: str | None = Header(default=None)):
         return {"updated_at": last.get("updated_at") or iso_now(), "report": rep}
 
     raw = get_cached_brief(force_refresh=False)
-    rep2 = premium_report_ai(
-        headlines=raw.get("headlines", []),
+    rep2 = premium_report_ai_from_bundle(
+        bundle={
+            "premium": (raw.get("premium_insight") or ""),
+            "analysis": (raw.get("analysis") or raw.get("macro_summary") or ""),
+        },
         signal_state=str(raw.get("signal") or "neutral"),
         signal_reason=str(raw.get("signal_reason") or ""),
         price_usd=safe_float(raw.get("price_usd")),
         change_pct=safe_float(raw.get("change_pct")),
         rsi14=safe_float(raw.get("rsi14")),
         trend_score=raw.get("trend_score") if isinstance(raw.get("trend_score"), int) else None,
+        headlines=raw.get("headlines", []),
     )
     return {"updated_at": iso_now(), "report": rep2 or ""}
+
+@app.get("/api/premium/brief")
+def api_premium_brief(x_api_key: str | None = Header(default=None), force_refresh: bool = False):
+    """
+    Betalende får tilgang til premium_insight i samme payload.
+    """
+    if not is_valid_key(x_api_key):
+        return JSONResponse(status_code=401, content={"error": "PREMIUM_REQUIRED", "message": "Premium kreves."})
+    try:
+        raw = get_cached_brief(force_refresh=force_refresh)
+        return {
+            "updated_at": raw.get("updated_at") or iso_now(),
+            "analysis": raw.get("analysis") or raw.get("macro_summary") or "",
+            "forecast": raw.get("forecast") or "",
+            "xauusd": raw.get("xauusd") or "",
+            "premium_insight": raw.get("premium_insight") or "",
+            "signal": raw.get("signal") or "neutral",
+            "signal_reason": raw.get("signal_reason") or "",
+            "price_usd": raw.get("price_usd"),
+            "change_pct": raw.get("change_pct"),
+            "rsi14": raw.get("rsi14"),
+            "trend_score": raw.get("trend_score"),
+            "headlines": raw.get("headlines") or [],
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": "PREMIUM_BRIEF_FAILED", "message": str(e)})
 
 @app.post("/api/premium/subscribe-email")
 async def api_subscribe_email(req: Request, x_api_key: str | None = Header(default=None)):
@@ -1306,10 +1366,6 @@ def api_check_signal(admin_key: str = ""):
 
 @app.get("/api/tasks/send-daily-macro")
 def api_send_daily_macro(admin_key: str = ""):
-    """
-    Daily macro email (macro_summary + top headlines) to all active subscribers.
-    Uses last_macro_sent_date to avoid duplicates per day.
-    """
     if admin_key != ADMIN_API_KEY:
         return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED", "message": "admin_key feil."})
 
@@ -1323,7 +1379,7 @@ def api_send_daily_macro(admin_key: str = ""):
 
     today = datetime.now(timezone.utc).date().isoformat()
     sig = str(raw.get("signal") or "neutral").upper()
-    macro = (raw.get("macro_summary") or "").strip()
+    macro = (raw.get("analysis") or raw.get("macro_summary") or "").strip()
     headlines = raw.get("headlines") or []
 
     top_lines = []
@@ -1416,7 +1472,6 @@ def api_send_daily_premium(admin_key: str = ""):
     for row in rows:
         if not is_valid_key(row["api_key"]):
             continue
-
         if (row["last_daily_sent_date"] or "") == today:
             continue
 
@@ -1433,10 +1488,6 @@ def api_send_daily_premium(admin_key: str = ""):
 
 @app.get("/api/tasks/refresh-snapshot")
 def api_refresh_snapshot(admin_key: str = ""):
-    """
-    Cron-friendly: refreshes data and stores snapshot if needed.
-    Use: GET /api/tasks/refresh-snapshot?admin_key=...
-    """
     if admin_key != ADMIN_API_KEY:
         return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED", "message": "admin_key feil."})
     raw = get_cached_brief(force_refresh=True)
@@ -1511,6 +1562,57 @@ async def api_stripe_create_checkout(req: Request):
         return {"url": session.url}
     except Exception as ex:
         return JSONResponse(status_code=400, content={"error": "STRIPE_CREATE_CHECKOUT_FAILED", "message": str(ex)})
+
+SUCCESS_HTML = """<!doctype html>
+<html lang="no">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Gullbrief - Success</title>
+  <style>
+    body{margin:0;padding:30px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;background:#0f1720;color:#e5e7eb}
+    .card{max-width:780px;margin:0 auto;background:#16212c;border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:18px}
+    code{background:rgba(255,255,255,.07);padding:2px 6px;border-radius:8px}
+    button{border:0;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer;background:#d4af37;color:#0b0f14}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Betaling registrert</h2>
+    <p>Vi henter premium-nøkkelen din nå.</p>
+    <p id="status">Laster…</p>
+    <p><strong>Premium-nøkkel:</strong> <code id="key">–</code></p>
+    <button id="btn">Åpne arkiv</button>
+  </div>
+
+<script>
+  const sessionId = "__SESSION_ID__";
+  const statusEl = document.getElementById("status");
+  const keyEl = document.getElementById("key");
+  document.getElementById("btn").addEventListener("click", ()=>{
+    if(keyEl.textContent && keyEl.textContent !== "–"){
+      localStorage.setItem("gullbrief_premium_key", keyEl.textContent);
+    }
+    location.href="/archive";
+  });
+
+  async function loadKey(){
+    try{
+      const res = await fetch("/api/stripe/claim-key?session_id=" + encodeURIComponent(sessionId), {cache:"no-store"});
+      const data = await res.json();
+      if(!res.ok) throw new Error(data?.message || ("HTTP "+res.status));
+      keyEl.textContent = data.api_key || "–";
+      statusEl.textContent = "OK. Nøkkel klar.";
+    }catch(e){
+      statusEl.textContent = "Venter på bekreftelse fra Stripe (webhook)… " + e;
+      setTimeout(loadKey, 1200);
+    }
+  }
+  if(sessionId){ loadKey(); } else { statusEl.textContent = "Mangler session_id."; }
+</script>
+</body>
+</html>
+"""
 
 @app.get("/success", response_class=HTMLResponse)
 def success_page(session_id: str = ""):
@@ -1588,7 +1690,6 @@ async def stripe_webhook(request: Request):
 
             if customer and subscription:
                 _upsert_key_for_stripe(email=email, customer_id=customer, subscription_id=subscription)
-
                 payment_status = (obj.get("payment_status") or "").strip().lower()
                 if payment_status == "paid":
                     _set_key_status_for_customer(customer, "active")
@@ -1660,7 +1761,7 @@ def sitemap_xml(request: Request):
     ]
 
     archive_days = get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)
-    xml_items = []
+    xml_items: List[str] = []
 
     def add_url(path: str, freq: str, lastmod: Optional[str] = None) -> None:
         loc = f"{base}{path}"
@@ -1683,9 +1784,6 @@ def sitemap_xml(request: Request):
 
 @app.get("/feed.xml")
 def feed_xml(request: Request):
-    """
-    Simple RSS feed of latest snapshots (SEO + discovery).
-    """
     base = get_base_url(request)
     rows = read_history(limit=max(200, FEED_ITEMS * 5))
     if not rows:
@@ -1701,10 +1799,9 @@ def feed_xml(request: Request):
         return Response(content=rss, media_type="application/rss+xml")
 
     items_xml = []
-    # newest first
     for r in list(reversed(rows))[:FEED_ITEMS]:
         upd = str(r.get("updated_at") or "")
-        d = _date_yyyy_mm_dd(upd) or ""
+        d = date_yyyy_mm_dd_from_iso_or_rss(upd) or ""
         sig = str(r.get("signal") or "neutral").upper()
         price = safe_float(r.get("price_usd"))
         title = f"{APP_NAME}: {sig} – {d}" + (f" – {price:.2f} USD" if price is not None else "")
@@ -1750,7 +1847,7 @@ def og_svg(request: Request):
   <circle cx="980" cy="160" r="120" fill="#d4af37" opacity="0.18"/>
   <circle cx="1040" cy="210" r="160" fill="#d4af37" opacity="0.10"/>
   <text x="80" y="210" fill="#e5e7eb" font-size="64" font-family="Georgia, serif" font-weight="700">{_escape_html(APP_NAME)}</text>
-  <text x="80" y="290" fill="#9aa3af" font-size="34" font-family="system-ui, -apple-system, Segoe UI, Roboto, Arial">Gullpris analyse • signal • makro (daglig)</text>
+  <text x="80" y="290" fill="#9aa3af" font-size="34" font-family="system-ui, -apple-system, Segoe UI, Roboto, Arial">Gullpris analyse • prognose • XAUUSD (daglig)</text>
   <text x="80" y="420" fill="#e5e7eb" font-size="44" font-family="system-ui, -apple-system, Segoe UI, Roboto, Arial" font-weight="800">{_escape_html(base.replace("https://","").replace("http://",""))}</text>
   <text x="80" y="500" fill="#9aa3af" font-size="28" font-family="system-ui, -apple-system, Segoe UI, Roboto, Arial">Gratis i dag • Premium: arkiv + signalhistorikk</text>
 </svg>"""
@@ -1758,7 +1855,7 @@ def og_svg(request: Request):
 
 
 # =============================================================================
-# Pages: templates (NO f-strings with JS braces)
+# Pages: templates
 # =============================================================================
 
 def footer_links() -> str:
@@ -1802,11 +1899,11 @@ INDEX_BODY_TEMPLATE = """
       <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
       <p class="muted" style="margin-top:12px" id="reason">–</p>
 
-      <h2 style="margin-top:14px">Makro i dag</h2>
+      <h2 style="margin-top:14px">Makro i dag (Analyse)</h2>
       <p class="muted" id="macro">–</p>
 
       <p class="muted">
-      Se også vår <a href="/gullpris-prognose">gullpris prognose</a> for scenario de neste dagene.
+      Se også <a href="/gullpris-prognose">gullpris prognose</a> og <a href="/xauusd">XAUUSD</a>.
       </p>
 
       <div class="btnrow">
@@ -1829,6 +1926,7 @@ INDEX_BODY_TEMPLATE = """
 </div>
 
 <script>
+  const MODE = "analysis";
   const $ = (id) => document.getElementById(id);
   const fmtPct = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ((Number(x)>0?"+":"") + Number(x).toFixed(2) + "%");
   const fmtPrice = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ("$" + Number(x).toLocaleString(undefined,{maximumFractionDigits:2}));
@@ -1837,7 +1935,7 @@ INDEX_BODY_TEMPLATE = """
   async function loadToday(){
     try{
       $("status").textContent = "Status: Laster…";
-      const res = await fetch("/api/public/today", {cache:"no-store"});
+      const res = await fetch("/api/public/today?mode=" + encodeURIComponent(MODE), {cache:"no-store"});
       const data = await res.json();
       if(!res.ok) throw new Error(data?.message || ("HTTP " + res.status));
       $("updatedAt").textContent = "Oppdatert: " + (data.updated_at || "–");
@@ -1974,7 +2072,7 @@ SEO_LANDING_TEMPLATE = """
       <div class="sub" id="change">–</div>
       <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
       <p class="muted" style="margin-top:12px" id="reason">–</p>
-      <h2 style="margin-top:14px">Kort makro</h2>
+      <h2 style="margin-top:14px">Kort tekst</h2>
       <p class="muted" id="macro">–</p>
 
       <div class="btnrow">
@@ -1989,8 +2087,9 @@ SEO_LANDING_TEMPLATE = """
       <div class="title"><h2>Relaterte sider</h2><div class="muted">SEO</div></div>
       <ul>
         <li><a href="/gullpris-analyse">Gullpris analyse</a></li>
-        <li><a href="/gullpris-signal">Gullpris signal</a></li>
+        <li><a href="/gullpris-prognose">Gullpris prognose</a></li>
         <li><a href="/xauusd">XAUUSD</a></li>
+        <li><a href="/gullpris-signal">Gullpris signal</a></li>
         <li><a href="/premium">Premium</a></li>
       </ul>
       <p class="muted">Tips: Del denne siden i sosiale medier for rask crawling.</p>
@@ -2001,6 +2100,7 @@ SEO_LANDING_TEMPLATE = """
 </div>
 
 <script>
+  const MODE = "__MODE__";
   const $ = (id) => document.getElementById(id);
   const fmtPct = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ((Number(x)>0?"+":"") + Number(x).toFixed(2) + "%");
   const fmtPrice = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ("$" + Number(x).toLocaleString(undefined,{maximumFractionDigits:2}));
@@ -2009,7 +2109,7 @@ SEO_LANDING_TEMPLATE = """
   async function loadToday(){
     try{
       $("status").textContent = "Status: Laster…";
-      const res = await fetch("/api/public/today", {cache:"no-store"});
+      const res = await fetch("/api/public/today?mode=" + encodeURIComponent(MODE), {cache:"no-store"});
       const data = await res.json();
       if(!res.ok) throw new Error(data?.message || ("HTTP " + res.status));
       $("updatedAt").textContent = "Oppdatert: " + (data.updated_at || "–");
@@ -2030,8 +2130,7 @@ SEO_LANDING_TEMPLATE = """
 </script>
 """
 
-ARCHIVE_BODY_INNER = """
-<div class="wrap">
+ARCHIVE_BODY_INNER = """<div class="wrap">
   <header>
     <div class="brand">__APP_NAME__ Arkiv</div>
     <div class="nav">
@@ -2239,57 +2338,18 @@ ARCHIVE_BODY_INNER = """
 </script>
 """
 
-SUCCESS_HTML = """<!doctype html>
-<html lang="no">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Gullbrief - Success</title>
-  <style>
-    body{margin:0;padding:30px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;background:#0f1720;color:#e5e7eb}
-    .card{max-width:780px;margin:0 auto;background:#16212c;border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:18px}
-    code{background:rgba(255,255,255,.07);padding:2px 6px;border-radius:8px}
-    button{border:0;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer;background:#d4af37;color:#0b0f14}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h2>Betaling registrert</h2>
-    <p>Vi henter premium-nøkkelen din nå.</p>
-    <p id="status">Laster…</p>
-    <p><strong>Premium-nøkkel:</strong> <code id="key">–</code></p>
-    <button id="btn">Åpne arkiv</button>
-  </div>
-
-<script>
-  const sessionId = "__SESSION_ID__";
-  const statusEl = document.getElementById("status");
-  const keyEl = document.getElementById("key");
-  document.getElementById("btn").addEventListener("click", ()=>{
-    if(keyEl.textContent && keyEl.textContent !== "–"){
-      localStorage.setItem("gullbrief_premium_key", keyEl.textContent);
-    }
-    location.href="/archive";
-  });
-
-  async function loadKey(){
-    try{
-      const res = await fetch("/api/stripe/claim-key?session_id=" + encodeURIComponent(sessionId), {cache:"no-store"});
-      const data = await res.json();
-      if(!res.ok) throw new Error(data?.message || ("HTTP "+res.status));
-      keyEl.textContent = data.api_key || "–";
-      statusEl.textContent = "OK. Nøkkel klar.";
-    }catch(e){
-      statusEl.textContent = "Venter på bekreftelse fra Stripe (webhook)… " + e;
-      setTimeout(loadKey, 1200);
-    }
-  }
-  if(sessionId){ loadKey(); } else { statusEl.textContent = "Mangler session_id."; }
-</script>
-</body>
-</html>
-"""
-
+def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, intro: str, mode: str) -> HTMLResponse:
+    body = _replace_many(
+        SEO_LANDING_TEMPLATE,
+        {
+            "__APP_NAME__": _escape_html(APP_NAME),
+            "__H1__": _escape_html(h1),
+            "__INTRO__": _escape_html(intro),
+            "__FOOTER__": footer_links(),
+            "__MODE__": _escape_html(mode),
+        },
+    )
+    return HTMLResponse(html_shell(request, title=title, description=desc, path=path, body_html=body))
 
 # =============================================================================
 # Pages routes
@@ -2331,10 +2391,8 @@ def archive_page(request: Request) -> HTMLResponse:
     title = "Gullbrief arkiv – signalhistorikk og avkastning etter signal"
     desc = "Se siste snapshots gratis. Premium gir full historikk, signalhistorikk (siste 30) og 7d/30d etter signal."
 
-    # HTML "arkivkart" for crawling
     dates = get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)
 
-    # hvis historikk er tom på serveren, lag ett snapshot
     if not dates:
         try:
             raw = get_cached_brief(force_refresh=True)
@@ -2344,7 +2402,6 @@ def archive_page(request: Request) -> HTMLResponse:
                 pass
         except Exception:
             pass
-
         dates = get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)
 
     links = []
@@ -2367,35 +2424,38 @@ def archive_page(request: Request) -> HTMLResponse:
         },
     )
 
-    # Legg arkivkartet etter første card (enkelt og trygt)
     body = archive_map_html + body
-
     return HTMLResponse(html_shell(request, title=title, description=desc, path="/archive", body_html=body))
 
 @app.get("/archive/{day}", response_class=HTMLResponse)
 def archive_day_page(request: Request, day: str) -> HTMLResponse:
-    # Public SEO landing for a specific day (no premium leak)
     try:
         date.fromisoformat(day)
     except Exception:
-        return HTMLResponse(html_shell(
-            request,
-            title=f"{APP_NAME} – Arkiv",
-            description="Ugyldig dato.",
-            path=f"/archive/{_escape_html(day)}",
-            body_html="<div class='wrap'><div class='card'>Ugyldig dato.</div></div>",
-        ), status_code=404)
+        return HTMLResponse(
+            html_shell(
+                request,
+                title=f"{APP_NAME} – Arkiv",
+                description="Ugyldig dato.",
+                path=f"/archive/{_escape_html(day)}",
+                body_html="<div class='wrap'><div class='card'>Ugyldig dato.</div></div>",
+            ),
+            status_code=404,
+        )
 
     snap = load_snapshot_for_date(day)
     if not snap:
-        return HTMLResponse(html_shell(
-            request,
-            title=f"{APP_NAME} – Arkiv {day}",
-            description="Ingen snapshot funnet for denne dagen ennå.",
-            path=f"/archive/{day}",
-            body_html="<div class='wrap'><div class='card'>Ingen snapshot funnet for denne dagen ennå.</div></div>",
-            article_date=day,
-        ), status_code=404)
+        return HTMLResponse(
+            html_shell(
+                request,
+                title=f"{APP_NAME} – Arkiv {day}",
+                description="Ingen snapshot funnet for denne dagen ennå.",
+                path=f"/archive/{day}",
+                body_html="<div class='wrap'><div class='card'>Ingen snapshot funnet for denne dagen ennå.</div></div>",
+                article_date=day,
+            ),
+            status_code=404,
+        )
 
     sig = str(snap.get("signal") or "neutral").upper()
     price = safe_float(snap.get("price_usd"))
@@ -2440,31 +2500,24 @@ def archive_day_page(request: Request, day: str) -> HTMLResponse:
       __FOOTER__
     </div>
     """
-    body = _replace_many(inner, {
-        "__APP_NAME__": _escape_html(APP_NAME),
-        "__DAY__": _escape_html(day),
-        "__SIG__": _escape_html(sig),
-        "__HEADER__": _escape_html(header),
-        "__REASON__": _escape_html(reason or "—"),
-        "__MACRO__": _escape_html(macro or "—"),
-        "__FOOTER__": footer_links(),
-    })
-
-    title = f"{APP_NAME} arkiv {day} – {sig}"
-    desc = f"{APP_NAME} snapshot {day}: {sig}. {header}. Kort makro og forklaring."
-    return HTMLResponse(html_shell(request, title=title, description=desc, path=f"/archive/{day}", body_html=body, article_date=day))
-
-def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, intro: str) -> HTMLResponse:
     body = _replace_many(
-        SEO_LANDING_TEMPLATE,
+        inner,
         {
             "__APP_NAME__": _escape_html(APP_NAME),
-            "__H1__": _escape_html(h1),
-            "__INTRO__": _escape_html(intro),
+            "__DAY__": _escape_html(day),
+            "__SIG__": _escape_html(sig),
+            "__HEADER__": _escape_html(header),
+            "__REASON__": _escape_html(reason or "—"),
+            "__MACRO__": _escape_html(macro or "—"),
             "__FOOTER__": footer_links(),
         },
     )
-    return HTMLResponse(html_shell(request, title=title, description=desc, path=path, body_html=body))
+
+    title = f"{APP_NAME} arkiv {day} – {sig}"
+    desc = f"{APP_NAME} snapshot {day}: {sig}. {header}. Kort makro og forklaring."
+    return HTMLResponse(
+        html_shell(request, title=title, description=desc, path=f"/archive/{day}", body_html=body, article_date=day)
+    )
 
 @app.get("/gullpris-prognose", response_class=HTMLResponse)
 def page_gullpris_prognose(request: Request) -> HTMLResponse:
@@ -2474,7 +2527,8 @@ def page_gullpris_prognose(request: Request) -> HTMLResponse:
         title="Gullpris prognose – scenario for de neste dagene",
         desc="Gullpris prognose basert på trend, signal og makrodrivere som renter, USD og geopolitikk.",
         h1="Gullpris prognose",
-        intro="Et enkelt scenario for hvordan gullprisen kan utvikle seg de neste 24–72 timene."
+        intro="Fremoverlent scenario for de neste 24–72 timene (base/bull/bear).",
+        mode="forecast",
     )
 
 @app.get("/gullpris-analyse", response_class=HTMLResponse)
@@ -2486,6 +2540,7 @@ def page_gullpris_analyse(request: Request) -> HTMLResponse:
         desc="Daglig gullpris analyse: signal, trend og makrodrivere. Se dagens status og oppdateringer.",
         h1="Gullpris analyse",
         intro="Nøktern daglig analyse av gull. Fokus på trend, signal og makro.",
+        mode="analysis",
     )
 
 @app.get("/xauusd", response_class=HTMLResponse)
@@ -2494,9 +2549,10 @@ def page_xauusd(request: Request) -> HTMLResponse:
         request,
         path="/xauusd",
         title="XAUUSD – gull mot dollar: signal og analyse",
-        desc="XAUUSD (gull mot USD): daglig signal, trend og kort makro. Premium gir arkiv og signalhistorikk.",
+        desc="XAUUSD (gull mot USD): daglig signal, trend og drivere. Premium gir arkiv og signalhistorikk.",
         h1="XAUUSD",
-        intro="Gull mot USD: pris, signal og korte drivere. Oppdatert daglig.",
+        intro="Spot gull vs USD: fokus på USD, renter og risk-on/off.",
+        mode="xauusd",
     )
 
 @app.get("/gullpris-signal", response_class=HTMLResponse)
@@ -2508,6 +2564,7 @@ def page_gullpris_signal(request: Request) -> HTMLResponse:
         desc="Gullpris signal (bullish/bearish/neutral) og forklaring. Premium viser signalhistorikk og 7d/30d etter signal.",
         h1="Gullpris signal",
         intro="Se dagens signal og hvorfor det er satt. Premium viser historikk, 7d/30d og treffsikkerhet (siste 30).",
+        mode="analysis",
     )
 
 @app.get("/gullpris", response_class=HTMLResponse)
@@ -2519,4 +2576,5 @@ def page_gullpris(request: Request) -> HTMLResponse:
         desc="Gullpris i dag: pris (USD), signal og de viktigste nyhetene som påvirker gull.",
         h1="Gullpris i dag",
         intro="Dagens pris og signal, med korte drivere og relevante nyheter.",
+        mode="analysis",
     )
