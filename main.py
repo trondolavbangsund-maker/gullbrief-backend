@@ -2153,3 +2153,18 @@ def page_gullpris(request: Request) -> HTMLResponse:
         mode="analysis",
         nav_active="analysis",
     )
+
+    # =============================================================================
+# Public API (frontend bruker denne)
+# =============================================================================
+
+@app.get("/api/public/today")
+def api_public_today(mode: str = "analysis"):
+    try:
+        data = get_cached_brief(force_refresh=False)
+        return JSONResponse(map_to_public_today(data, mode))
+    except Exception as e:
+        return JSONResponse(
+            {"message": str(e)},
+            status_code=500
+        )
