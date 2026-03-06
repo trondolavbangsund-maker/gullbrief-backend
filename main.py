@@ -1457,7 +1457,10 @@ INDEX_BODY_TEMPLATE = """
       <p class="muted" style="margin-top:12px" id="reason">–</p>
 
       <h2 style="margin-top:14px">Analyse</h2>
-      <p class="muted" id="macro">–</p>
+<p class="muted" id="macro">–</p>
+<div class="premiumhint">
+Les full analyse, flere nyheter og signalhistorikk i <a href="/premium">Premium</a>.
+</div>
 
       <div class="btnrow">
         <button id="btnReload">Oppdater</button>
