@@ -2126,10 +2126,14 @@ def archive_day_page(request: Request, day: str) -> HTMLResponse:
         </div>
       </header>
       __NAV_TABS__
-      <section class="hero">
-        <h1>Arkiv: __DAY__</h1>
-        <p>Nøkkelpunkter fra dagens snapshot. Full historikk og statistikk: Premium.</p>
-      </section>
+     <section class="hero">
+<h1>Gullpris analyse __DAY__</h1>
+<p>
+Dette er Gullbrief sin daglige analyse av gullpris og XAUUSD for __DAY__.
+Her finner du markedssignal, teknisk trend og makrodrivere som påvirker gull.
+Premium gir tilgang til full signalhistorikk, flere nyheter og arkiv.
+</p>
+</section>
       <section class="grid" style="grid-template-columns:1fr">
         <div class="card">
           <div class="title"><h2>Dagens snapshot</h2><div class="muted">__HEADER__</div></div>
