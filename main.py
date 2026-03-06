@@ -1,46 +1,36 @@
 ﻿from __future__ import annotations
 
-import os
-import time
+import hashlib
 import json
 import math
+import os
 import pathlib
 import secrets
 import sqlite3
-import traceback
-import socket
+import time
 import urllib.request
 import xml.etree.ElementTree as ET
-from email.utils import parsedate_to_datetime
-
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta, date
+from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
 import stripe  # type: ignore
-
 from fastapi import FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import (
-    HTMLResponse,
-    JSONResponse,
-    PlainTextResponse,
-    Response,
-    RedirectResponse,
-)
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 
 # =============================================================================
-# Gullbrief main.py – v3.5
-# - Profesjonell toppnavigasjon med ikon-tabs over innholdsboksen
-# - Skiller tydelig mellom Analyse / Prognose / XAUUSD / Signal
-# - Ett OpenAI-kall returnerer analysis / forecast / xauusd / premium
-# - Premium får mer: tekniske nivåer, scenario, "hva bryter signalet", watchlist
-# - Stabil RSS (direkte finanskilder)
-# - Beholder Stripe / Brevo / Premium / Arkiv / SEO / Feed / Sitemap
+# Gullbrief main.py – v3.6
+# - Fikser /api/public/today
+# - Relevante nyheter tilbake på høyre side på alle SEO-sider
+# - 5 gratis nyheter på offentlige sider
+# - Fullt datasett tilgjengelig i backend / premium-flyt
+# - Beholder premium / arkiv / Stripe / SEO / feed / sitemap / robots
 # =============================================================================
 
 
@@ -69,21 +59,16 @@ RSS_FEEDS = [u.strip() for u in RSS_FEEDS_ENV.split(",") if u.strip()]
 HISTORY_PATH = os.getenv("HISTORY_PATH", "data/history.jsonl").strip()
 DB_PATH = os.getenv("DB_PATH", "data/app.db").strip()
 
-# Admin/dev key (alltid gyldig). Sett i Render env som PREMIUM_API_KEY.
 ADMIN_API_KEY = os.getenv("PREMIUM_API_KEY", "gullbrief-dev").strip()
-
 BASE_URL = os.getenv("BASE_URL", "").strip().rstrip("/")
 
-# Brevo
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
 SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "").strip()
 SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", APP_NAME).strip()
 
-# Stripe
 STRIPE_SUCCESS_URL_DEFAULT = os.getenv("STRIPE_SUCCESS_URL", "").strip()
 STRIPE_CANCEL_URL_DEFAULT = os.getenv("STRIPE_CANCEL_URL", "").strip()
 
-# Search Console
 GOOGLE_SITE_VERIFICATION = os.getenv("GOOGLE_SITE_VERIFICATION", "").strip()
 if not GOOGLE_SITE_VERIFICATION:
     GOOGLE_SITE_VERIFICATION = "google-site-verification=W5dv0qhSwRLBDZH6YcVwJtqybjReTSmbjggqvhTJvVI"
@@ -97,12 +82,15 @@ TWITTER_SITE = os.getenv("TWITTER_SITE", "").strip()
 SITEMAP_ARCHIVE_DAYS = int(os.getenv("SITEMAP_ARCHIVE_DAYS", "45"))
 FEED_ITEMS = int(os.getenv("FEED_ITEMS", "20"))
 
+FREE_HEADLINES_LIMIT = int(os.getenv("FREE_HEADLINES_LIMIT", "5"))
+FULL_HEADLINES_LIMIT = int(os.getenv("FULL_HEADLINES_LIMIT", "15"))
+
 
 # =============================================================================
 # App + CORS + Static
 # =============================================================================
 
-app = FastAPI(title=f"{APP_NAME} Backend", version="3.5", docs_url=None, redoc_url=None)
+app = FastAPI(title=f"{APP_NAME} Backend", version="3.6", docs_url=None, redoc_url=None)
 
 origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
@@ -163,7 +151,7 @@ def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: i
 
 def http_get_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> str:
     h = headers or {}
-    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/3.5)")
+    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/3.6)")
     h.setdefault("Accept", "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1")
     r = requests.get(url, headers=h, timeout=timeout, allow_redirects=True)
     r.raise_for_status()
@@ -220,6 +208,10 @@ def _replace_many(template: str, mapping: Dict[str, str]) -> str:
     return out
 
 
+def _hash_email(email: str) -> str:
+    return hashlib.sha256(email.strip().lower().encode("utf-8")).hexdigest()[:16]
+
+
 # =============================================================================
 # Stripe helpers
 # =============================================================================
@@ -253,7 +245,7 @@ def require_stripe(request: Optional[Request] = None) -> Dict[str, str]:
     if request:
         base = get_base_url(request)
         if not e["success_url"]:
-            e["success_url"] = f"{base}/success"
+            e["success_url"] = f"{base}/success?session_id={{CHECKOUT_SESSION_ID}}"
         if not e["cancel_url"]:
             e["cancel_url"] = f"{base}/premium"
 
@@ -338,11 +330,18 @@ def is_valid_key(k: Optional[str]) -> bool:
     return bool(row) and row["status"] == "active"
 
 
+def _find_key(api_key: str) -> Optional[sqlite3.Row]:
+    conn = _db()
+    row = conn.execute("SELECT * FROM api_keys WHERE api_key=?", (api_key,)).fetchone()
+    conn.close()
+    return row
+
+
 def _upsert_key_for_stripe(email: str, customer_id: str, subscription_id: str) -> str:
     conn = _db()
     row = conn.execute(
-        "SELECT api_key FROM api_keys WHERE stripe_customer_id=? OR stripe_subscription_id=?",
-        (customer_id, subscription_id),
+        "SELECT api_key FROM api_keys WHERE stripe_customer_id=? OR stripe_subscription_id=? OR email=?",
+        (customer_id, subscription_id, email or None),
     ).fetchone()
 
     if row:
@@ -368,6 +367,13 @@ def _upsert_key_for_stripe(email: str, customer_id: str, subscription_id: str) -
 def _set_key_status_for_customer(customer_id: str, status: str) -> None:
     conn = _db()
     conn.execute("UPDATE api_keys SET status=? WHERE stripe_customer_id=?", (status, customer_id))
+    conn.commit()
+    conn.close()
+
+
+def _set_key_status_for_subscription(subscription_id: str, status: str) -> None:
+    conn = _db()
+    conn.execute("UPDATE api_keys SET status=? WHERE stripe_subscription_id=?", (status, subscription_id))
     conn.commit()
     conn.close()
 
@@ -404,7 +410,7 @@ class YahooPrice:
 
 
 def fetch_yahoo_chart(symbol: str, range_: str, interval: str) -> Dict[str, Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.5)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.6)"}
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
     return http_get_json(url, headers=headers)
 
@@ -587,11 +593,11 @@ def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
     return items
 
 
-def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
+def fetch_headlines(limit: int = FULL_HEADLINES_LIMIT) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
 
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.5)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.6)"}
     all_items: List[Dict[str, str]] = []
 
     for feed_url in RSS_FEEDS:
@@ -824,7 +830,7 @@ def build_brief() -> Dict[str, Any]:
     tscore = sig_meta.get("trend_score") if isinstance(sig_meta.get("trend_score"), int) else None
 
     levels = compute_technical_levels(YAHOO_SYMBOL)
-    headlines = fetch_headlines(limit=10)
+    headlines = fetch_headlines(limit=FULL_HEADLINES_LIMIT)
 
     bundle = summarize_bundle_with_openai(
         headlines=headlines,
@@ -846,7 +852,7 @@ def build_brief() -> Dict[str, Any]:
 
     return {
         "updated_at": yp.ts,
-        "version": "3.5",
+        "version": "3.6",
         "symbol": yp.symbol,
         "currency": yp.currency,
         "price_usd": yp.last,
@@ -893,11 +899,13 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
 
     return {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.5"),
+        "version": data.get("version", "3.6"),
         "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
         "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
         "macro": {"mode": mode, "summary_short": summary},
-        "headlines": data.get("headlines", []),
+        "headlines": (data.get("headlines") or [])[:FREE_HEADLINES_LIMIT],
+        "headlines_total": len(data.get("headlines") or []),
+        "headlines_free_limit": FREE_HEADLINES_LIMIT,
     }
 
 
@@ -971,7 +979,7 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
 
     rec = {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.5"),
+        "version": data.get("version", "3.6"),
         "symbol": data.get("symbol"),
         "price_usd": data.get("price_usd"),
         "change_pct": data.get("change_pct"),
@@ -1071,11 +1079,6 @@ def signal_stats_last30(rows_newest_first: List[Dict[str, Any]]) -> Dict[str, An
         "bearish_avg_7d": avg(bearish),
         "hit_rate_7d": (hits / evals * 100.0) if evals else None,
     }
-
-
-def latest_signal() -> str:
-    last = _read_last_snapshot()
-    return (last.get("signal") if last else "") or ""
 
 
 def get_archive_dates(last_n_days: int = 45) -> List[str]:
@@ -1342,6 +1345,7 @@ COMMON_STYLE = """
   footer{margin-top:22px;color:var(--muted);font-size:13px}
   .links{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px}
   .links a{color:var(--muted)}
+  .premiumhint{margin-top:12px;padding:10px 12px;border-radius:12px;background:rgba(212,175,55,.08);border:1px solid rgba(212,175,55,.18);color:#f1e2a7}
 </style>
 """
 
@@ -1468,6 +1472,7 @@ INDEX_BODY_TEMPLATE = """
     <div class="card">
       <div class="title"><h2>Relevante nyheter</h2><div class="muted">Direkte kilder</div></div>
       <ul id="headlines"></ul>
+      <div id="premiumNewsHint" class="premiumhint" style="display:none"></div>
     </div>
   </section>
 
@@ -1480,6 +1485,30 @@ INDEX_BODY_TEMPLATE = """
   const fmtPct = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ((Number(x)>0?"+":"") + Number(x).toFixed(2) + "%");
   const fmtPrice = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ("$" + Number(x).toLocaleString(undefined,{maximumFractionDigits:2}));
   const pillClass = (s) => (s||"").toLowerCase().includes("bull") ? "bullish" : ((s||"").toLowerCase().includes("bear") ? "bearish" : "neutral");
+
+  function renderHeadlines(data){
+    const ul = $("headlines");
+    ul.innerHTML = "";
+    (data.headlines||[]).forEach(h=>{
+      const li=document.createElement("li");
+      const a=document.createElement("a");
+      a.href=h.link; a.target="_blank"; a.rel="noopener noreferrer";
+      a.textContent=h.title || "(uten tittel)";
+      const d=document.createElement("div"); d.className="muted";
+      d.textContent=(h.source||"Kilde") + (h.published?(" | "+h.published):"");
+      li.appendChild(a); li.appendChild(d); ul.appendChild(li);
+    });
+    const total = Number(data.headlines_total || 0);
+    const freeLimit = Number(data.headlines_free_limit || 0);
+    const hint = $("premiumNewsHint");
+    if(total > freeLimit){
+      hint.style.display = "";
+      hint.innerHTML = `Viser ${freeLimit} gratis nyheter. Premium gir tilgang til flere markedssaker og arkiv. <a href="/premium">Åpne Premium</a>`;
+    }else{
+      hint.style.display = "none";
+      hint.textContent = "";
+    }
+  }
 
   async function loadToday(){
     try{
@@ -1495,17 +1524,7 @@ INDEX_BODY_TEMPLATE = """
       $("signalPill").className = "pill " + pillClass(state);
       $("reason").textContent = data?.signal?.reason_short || "–";
       $("macro").textContent = data?.macro?.summary_short || "–";
-
-      const ul = $("headlines"); ul.innerHTML = "";
-      (data.headlines||[]).forEach(h=>{
-        const li=document.createElement("li");
-        const a=document.createElement("a");
-        a.href=h.link; a.target="_blank"; a.rel="noopener noreferrer";
-        a.textContent=h.title || "(uten tittel)";
-        const d=document.createElement("div"); d.className="muted";
-        d.textContent=(h.source||"Kilde") + (h.published?(" | "+h.published):"");
-        li.appendChild(a); li.appendChild(d); ul.appendChild(li);
-      });
+      renderHeadlines(data);
       $("status").textContent = "Status: OK";
     }catch(e){
       $("status").textContent = "Status: Feil: " + e;
@@ -1537,7 +1556,7 @@ PREMIUM_BODY_TEMPLATE = """
 
   <section class="hero">
     <h1>Premium</h1>
-    <p>Mer data, mindre støy. Daglig premium-rapport, signalhistorikk og arkiv.</p>
+    <p>Mer data, mindre støy. Daglig premium-rapport, signalhistorikk, flere nyheter og arkiv.</p>
   </section>
 
   __NAV_TABS__
@@ -1549,6 +1568,7 @@ PREMIUM_BODY_TEMPLATE = """
         <li><b>Signalhistorikk (siste 30)</b> + treffsikkerhet</li>
         <li><b>Arkiv</b> med 7d/30d etter signal</li>
         <li><b>Daglig premium-rapport</b> på norsk</li>
+        <li><b>Flere nyheter</b> enn gratisversjonen</li>
         <li><b>E-postvarsler</b> ved signalendring og daglig utsendelse</li>
       </ul>
 
@@ -1638,10 +1658,9 @@ SEO_LANDING_TEMPLATE = """
     </div>
 
     <div class="card">
-      <div class="title"><h2>Nåværende fokus</h2><div class="muted">Gullbrief</div></div>
-      <p class="muted">
-        Denne siden er en del av samme analyseunivers som Gullbrief bruker for gullpris, scenario, XAUUSD og signal.
-      </p>
+      <div class="title"><h2>Relevante nyheter</h2><div class="muted">Direkte kilder</div></div>
+      <ul id="headlines"></ul>
+      <div id="premiumNewsHint" class="premiumhint" style="display:none"></div>
     </div>
   </section>
 
@@ -1654,6 +1673,30 @@ SEO_LANDING_TEMPLATE = """
   const fmtPct = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ((Number(x)>0?"+":"") + Number(x).toFixed(2) + "%");
   const fmtPrice = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ("$" + Number(x).toLocaleString(undefined,{maximumFractionDigits:2}));
   const pillClass = (s) => (s||"").toLowerCase().includes("bull") ? "bullish" : ((s||"").toLowerCase().includes("bear") ? "bearish" : "neutral");
+
+  function renderHeadlines(data){
+    const ul = $("headlines");
+    ul.innerHTML = "";
+    (data.headlines||[]).forEach(h=>{
+      const li=document.createElement("li");
+      const a=document.createElement("a");
+      a.href=h.link; a.target="_blank"; a.rel="noopener noreferrer";
+      a.textContent=h.title || "(uten tittel)";
+      const d=document.createElement("div"); d.className="muted";
+      d.textContent=(h.source||"Kilde") + (h.published?(" | "+h.published):"");
+      li.appendChild(a); li.appendChild(d); ul.appendChild(li);
+    });
+    const total = Number(data.headlines_total || 0);
+    const freeLimit = Number(data.headlines_free_limit || 0);
+    const hint = $("premiumNewsHint");
+    if(total > freeLimit){
+      hint.style.display = "";
+      hint.innerHTML = `Viser ${freeLimit} gratis nyheter. Premium gir tilgang til flere markedssaker og arkiv. <a href="/premium">Åpne Premium</a>`;
+    }else{
+      hint.style.display = "none";
+      hint.textContent = "";
+    }
+  }
 
   async function loadToday(){
     try{
@@ -1669,6 +1712,7 @@ SEO_LANDING_TEMPLATE = """
       $("signalPill").className = "pill " + pillClass(state);
       $("reason").textContent = data?.signal?.reason_short || "–";
       $("macro").textContent = data?.macro?.summary_short || "–";
+      renderHeadlines(data);
       $("status").textContent = "Status: OK";
     }catch(e){
       $("status").textContent = "Status: Feil: " + e;
@@ -1846,7 +1890,7 @@ ARCHIVE_BODY_INNER = """
       });
       const data = await res.json();
       if(!res.ok){ setStatus(data?.message || ("HTTP "+res.status)); return; }
-      setStatus("E-postvarsel aktivert ✅ (sendes ved signalendring + daglig premium + daglig makro)");
+      setStatus("E-postvarsel aktivert ✅");
     }catch(e){
       setStatus("Feil: " + e);
     }
@@ -1889,6 +1933,41 @@ ARCHIVE_BODY_INNER = """
   loadTeaser();
   if($("key").value.trim()){ loadArchive(); }
 </script>
+"""
+
+
+SUCCESS_TEMPLATE = """
+<div class="wrap">
+  <header>
+    <div class="brand">__APP_NAME__</div>
+    <div class="nav">
+      <a href="/">Analyse</a>
+      <a href="/archive">Arkiv</a>
+      <a class="cta" href="/premium">Premium</a>
+    </div>
+  </header>
+
+  <section class="hero">
+    <h1>Betaling registrert</h1>
+    <p>Hvis Stripe-webhooken har rukket å kjøre, ligger premium-nøkkelen din klar under.</p>
+  </section>
+
+  __NAV_TABS__
+
+  <section class="grid" style="grid-template-columns:1fr">
+    <div class="card">
+      <div class="title"><h2>Premium-nøkkel</h2><div class="muted">Aktivering</div></div>
+      <div class="big" style="font-size:24px;word-break:break-word">__KEY__</div>
+      <p class="muted" style="margin-top:12px">__STATUS__</p>
+      <div class="btnrow">
+        <button onclick="location.href='/archive'">Åpne arkiv</button>
+        <button onclick="navigator.clipboard.writeText('__KEY_RAW__').catch(()=>{})">Kopier nøkkel</button>
+      </div>
+    </div>
+  </section>
+
+  __FOOTER__
+</div>
 """
 
 
@@ -1935,7 +2014,7 @@ def index(request: Request) -> HTMLResponse:
 @app.get("/premium", response_class=HTMLResponse)
 def premium_page(request: Request) -> HTMLResponse:
     title = "Gullbrief Premium – gullpris analyse, signalhistorikk og arkiv"
-    desc = "Premium: daglig rapport, signalhistorikk (siste 30), arkiv med 7d/30d etter signal, og e-postvarsler."
+    desc = "Premium: daglig rapport, signalhistorikk, flere nyheter, arkiv med 7d/30d etter signal, og e-postvarsler."
     body = _replace_many(
         PREMIUM_BODY_TEMPLATE,
         {
@@ -1950,7 +2029,7 @@ def premium_page(request: Request) -> HTMLResponse:
 @app.get("/archive", response_class=HTMLResponse)
 def archive_page(request: Request) -> HTMLResponse:
     title = "Gullbrief arkiv – signalhistorikk og avkastning etter signal"
-    desc = "Se siste snapshots gratis. Premium gir full historikk, signalhistorikk (siste 30) og 7d/30d etter signal."
+    desc = "Se siste snapshots gratis. Premium gir full historikk, signalhistorikk og 7d/30d etter signal."
 
     dates = get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)
 
@@ -1970,11 +2049,11 @@ def archive_page(request: Request) -> HTMLResponse:
         links.append(f'<li><a href="/archive/{_escape_html(d)}">Arkiv {_escape_html(d)}</a></li>')
 
     archive_map_html = (
-        "<div class='card' style='margin-top:12px'>"
+        "<div class='wrap'><div class='card' style='margin-top:12px'>"
         "<div style='font-size:18px;font-weight:900'>Arkivkart</div>"
         "<div class='muted'>Lenker til de siste dagene.</div>"
         f"<ul>{''.join(links) if links else '<li class=\"muted\">Ingen arkiv-dager ennå.</li>'}</ul>"
-        "</div>"
+        "</div></div>"
     )
 
     body = _replace_many(
@@ -2085,6 +2164,50 @@ def archive_day_page(request: Request, day: str) -> HTMLResponse:
     )
 
 
+@app.get("/success", response_class=HTMLResponse)
+def success_page(request: Request, session_id: Optional[str] = None) -> HTMLResponse:
+    key = "Nøkkel opprettes..."
+    status_text = "Vent noen sekunder og oppdater siden hvis nøkkelen ikke vises med en gang."
+
+    if session_id and stripe_ready():
+        try:
+            require_stripe(request)
+            sess = stripe.checkout.Session.retrieve(session_id)
+            customer_id = getattr(sess, "customer", None)
+            subscription_id = getattr(sess, "subscription", None)
+            email = ""
+            try:
+                email = sess.get("customer_details", {}).get("email", "")  # type: ignore
+            except Exception:
+                pass
+
+            if customer_id or subscription_id or email:
+                conn = _db()
+                row = conn.execute(
+                    "SELECT api_key,status FROM api_keys WHERE stripe_customer_id=? OR stripe_subscription_id=? OR email=? ORDER BY created_at DESC LIMIT 1",
+                    (customer_id or "", subscription_id or "", email or ""),
+                ).fetchone()
+                conn.close()
+                if row:
+                    key = row["api_key"]
+                    status_text = f"Status: {row['status']}. Lagre nøkkelen og bruk den på arkivsiden."
+        except Exception:
+            pass
+
+    body = _replace_many(
+        SUCCESS_TEMPLATE,
+        {
+            "__APP_NAME__": _escape_html(APP_NAME),
+            "__KEY__": _escape_html(key),
+            "__KEY_RAW__": _escape_html(key),
+            "__STATUS__": _escape_html(status_text),
+            "__FOOTER__": footer_links(),
+            "__NAV_TABS__": nav_tabs("premium"),
+        },
+    )
+    return HTMLResponse(html_shell(request, title=f"{APP_NAME} – Betaling OK", description="Premium aktivert.", path="/success", body_html=body))
+
+
 @app.get("/gullpris-prognose", response_class=HTMLResponse)
 def page_gullpris_prognose(request: Request) -> HTMLResponse:
     return seo_landing(
@@ -2133,7 +2256,7 @@ def page_gullpris_signal(request: Request) -> HTMLResponse:
         request,
         path="/gullpris-signal",
         title="Gullpris signal – bullish/bearish og treffsikkerhet",
-        desc="Gullpris signal (bullish/bearish/neutral) og forklaring. Premium viser signalhistorikk og 7d/30d etter signal.",
+        desc="Gullpris signal og forklaring. Premium viser signalhistorikk og 7d/30d etter signal.",
         h1="Gullpris signal",
         intro="Se dagens signal og hvorfor det er satt. Premium viser historikk, 7d/30d og treffsikkerhet.",
         mode="analysis",
@@ -2154,8 +2277,9 @@ def page_gullpris(request: Request) -> HTMLResponse:
         nav_active="analysis",
     )
 
-    # =============================================================================
-# Public API (frontend bruker denne)
+
+# =============================================================================
+# Public API
 # =============================================================================
 
 @app.get("/api/public/today")
@@ -2164,7 +2288,273 @@ def api_public_today(mode: str = "analysis"):
         data = get_cached_brief(force_refresh=False)
         return JSONResponse(map_to_public_today(data, mode))
     except Exception as e:
-        return JSONResponse(
-            {"message": str(e)},
-            status_code=500
+        return JSONResponse({"message": str(e)}, status_code=500)
+
+
+@app.get("/api/public/teaser-history")
+def api_public_teaser_history():
+    rows = read_history(limit=50)
+    rows = add_forward_returns(rows)
+    items = rows[-3:] if rows else []
+    return JSONResponse({"items": items, "count": len(items)})
+
+
+# =============================================================================
+# Private / premium API
+# =============================================================================
+
+@app.get("/api/brief")
+def api_brief():
+    try:
+        data = get_cached_brief(force_refresh=False)
+        return JSONResponse(data)
+    except Exception as e:
+        return JSONResponse({"message": str(e)}, status_code=500)
+
+
+@app.get("/api/brief/refresh")
+def api_brief_refresh():
+    try:
+        data = get_cached_brief(force_refresh=True)
+        return JSONResponse({"ok": True, "updated_at": data.get("updated_at"), "version": data.get("version")})
+    except Exception as e:
+        return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
+
+
+@app.get("/api/history")
+def api_history(limit: int = 200, x_api_key: Optional[str] = Header(default=None)):
+    if not is_valid_key(x_api_key):
+        return JSONResponse({"message": "UNAUTHORIZED"}, status_code=401)
+
+    limit = max(1, min(limit, 1000))
+    rows = read_history(limit=limit)
+    rows = add_forward_returns(rows)
+    rows_out = list(reversed(rows))
+    stats = signal_stats_last30(rows_out)
+    return JSONResponse({"items": rows, "count": len(rows), "stats": stats})
+
+
+@app.post("/api/premium/subscribe-email")
+async def api_subscribe_email(request: Request, x_api_key: Optional[str] = Header(default=None)):
+    if not is_valid_key(x_api_key):
+        return JSONResponse({"message": "UNAUTHORIZED"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    email = str(body.get("email") or "").strip()
+    if "@" not in email:
+        return JSONResponse({"message": "Ugyldig e-post."}, status_code=400)
+
+    conn = _db()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO email_subscriptions(api_key,email,created_at,last_notified_signal,last_daily_sent_date,last_macro_sent_date) VALUES(?,?,?,?,?,?)",
+            (x_api_key, email, iso_now(), None, None, None),
         )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return JSONResponse({"ok": True, "email": email})
+
+
+# =============================================================================
+# Stripe API
+# =============================================================================
+
+@app.post("/api/stripe/create-checkout")
+async def api_stripe_create_checkout(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    email = str(body.get("email") or "").strip()
+    if "@" not in email:
+        return JSONResponse({"message": "Ugyldig e-post."}, status_code=400)
+
+    try:
+        env = require_stripe(request)
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            payment_method_types=["card"],
+            customer_email=email,
+            line_items=[{"price": env["price_id"], "quantity": 1}],
+            success_url=env["success_url"],
+            cancel_url=env["cancel_url"],
+            allow_promotion_codes=True,
+            metadata={"app": APP_NAME, "email_hash": _hash_email(email)},
+        )
+        return JSONResponse({"ok": True, "url": session.url})
+    except Exception as e:
+        return JSONResponse({"message": str(e)}, status_code=500)
+
+
+@app.post("/api/stripe/webhook")
+async def api_stripe_webhook(request: Request):
+    raw = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+
+    try:
+        env = require_stripe(None)
+        if env["webhook_secret"]:
+            event = stripe.Webhook.construct_event(raw, sig, env["webhook_secret"])
+        else:
+            event = json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        return JSONResponse({"error": "BAD_SIGNATURE", "message": str(e)}, status_code=400)
+
+    event_id = str(event.get("id") or "")
+    event_type = str(event.get("type") or "")
+    if event_id and _already_processed(event_id):
+        return JSONResponse({"ok": True, "duplicate": True})
+
+    data_obj = event.get("data", {}).get("object", {})
+
+    try:
+        if event_type == "checkout.session.completed":
+            customer_id = str(data_obj.get("customer") or "")
+            subscription_id = str(data_obj.get("subscription") or "")
+            email = (
+                str(data_obj.get("customer_details", {}).get("email") or "")
+                or str(data_obj.get("customer_email") or "")
+            )
+            if customer_id or subscription_id or email:
+                _upsert_key_for_stripe(email=email, customer_id=customer_id, subscription_id=subscription_id)
+                if customer_id:
+                    _set_key_status_for_customer(customer_id, "active")
+                if subscription_id:
+                    _set_key_status_for_subscription(subscription_id, "active")
+
+        elif event_type in ("customer.subscription.created", "customer.subscription.updated"):
+            customer_id = str(data_obj.get("customer") or "")
+            subscription_id = str(data_obj.get("id") or "")
+            status = str(data_obj.get("status") or "")
+            mapped = "active" if status in ("active", "trialing") else "inactive"
+            if customer_id:
+                _set_key_status_for_customer(customer_id, mapped)
+            if subscription_id:
+                _set_key_status_for_subscription(subscription_id, mapped)
+
+        elif event_type in ("customer.subscription.deleted",):
+            customer_id = str(data_obj.get("customer") or "")
+            subscription_id = str(data_obj.get("id") or "")
+            if customer_id:
+                _set_key_status_for_customer(customer_id, "inactive")
+            if subscription_id:
+                _set_key_status_for_subscription(subscription_id, "inactive")
+
+        if event_id:
+            _mark_processed(event_id, event_type)
+
+        return JSONResponse({"ok": True, "type": event_type})
+    except Exception as e:
+        return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
+
+
+# =============================================================================
+# Utility endpoints
+# =============================================================================
+
+@app.get("/health")
+def health():
+    return JSONResponse(
+        {
+            "status": "ok",
+            "ts": iso_now(),
+            "yahoo_symbol": YAHOO_SYMBOL,
+            "cache_ttl_seconds": CACHE_TTL_SECONDS,
+            "openai_enabled": bool(OPENAI_API_KEY),
+            "rss_feeds": RSS_FEEDS,
+            "history_path": HISTORY_PATH,
+            "db_path": DB_PATH,
+            "admin_key_configured": bool(ADMIN_API_KEY),
+            "stripe_enabled": stripe_ready(),
+            "stripe_secret_len": len(stripe_env()["secret_key"]),
+            "stripe_price_id_prefix": stripe_env()["price_id"][:10] + "..." if stripe_env()["price_id"] else "",
+            "stripe_webhook_secret_set": bool(stripe_env()["webhook_secret"]),
+            "smtp_enabled": brevo_configured(),
+            "version": "3.6",
+        }
+    )
+
+
+@app.get("/robots.txt")
+def robots_txt(request: Request):
+    base = get_base_url(request)
+    txt = f"User-agent: *\nAllow: /\n\nSitemap: {base}/sitemap.xml\n"
+    return PlainTextResponse(txt)
+
+
+@app.get("/feed.xml")
+def feed_xml(request: Request):
+    base = get_base_url(request)
+    rows = list(reversed(read_history(limit=max(FEED_ITEMS, 5))))
+    if not rows:
+        try:
+            rows = [get_cached_brief(force_refresh=False)]
+        except Exception:
+            rows = []
+
+    items = []
+    for r in rows[:FEED_ITEMS]:
+        updated = str(r.get("updated_at") or iso_now())
+        title = f"{APP_NAME}: {str(r.get('signal') or 'neutral').upper()} | {updated[:10]}"
+        link = f"{base}/gullpris-analyse"
+        desc = _escape_html(str(r.get("macro_summary") or ""))
+        pub = updated
+        items.append(
+            f"<item><title>{_escape_html(title)}</title>"
+            f"<link>{_escape_html(link)}</link>"
+            f"<guid>{_escape_html(link)}#{_escape_html(updated)}</guid>"
+            f"<pubDate>{_escape_html(pub)}</pubDate>"
+            f"<description>{desc}</description></item>"
+        )
+
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<rss version="2.0"><channel>'
+        f"<title>{_escape_html(APP_NAME)} feed</title>"
+        f"<link>{_escape_html(base)}</link>"
+        f"<description>{_escape_html(APP_NAME)} – siste signaler og analyser</description>"
+        + "".join(items)
+        + "</channel></rss>"
+    )
+    return Response(content=xml, media_type="application/rss+xml")
+
+
+@app.get("/sitemap.xml")
+def sitemap_xml(request: Request):
+    base = get_base_url(request)
+
+    static_urls = [
+        "/",
+        "/gullpris",
+        "/gullpris-analyse",
+        "/gullpris-prognose",
+        "/gullpris-signal",
+        "/xauusd",
+        "/premium",
+        "/archive",
+        "/feed.xml",
+    ]
+
+    archive_urls = [f"/archive/{d}" for d in get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)]
+
+    parts = ['<?xml version="1.0" encoding="UTF-8"?>', '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+    for p in static_urls + archive_urls:
+        changefreq = "daily" if p not in ("/premium", "/archive") else "weekly"
+        parts.append(
+            "<url>"
+            f"<loc>{_escape_html(base + p)}</loc>"
+            f"<changefreq>{changefreq}</changefreq>"
+            "</url>"
+        )
+    parts.append("</urlset>")
+    return Response(content="".join(parts), media_type="application/xml")
+
+
+@app.get(f"/{GOOGLE_SITE_VERIFICATION}")
+def google_site_verification():
+    return PlainTextResponse(GOOGLE_SITE_VERIFICATION)
