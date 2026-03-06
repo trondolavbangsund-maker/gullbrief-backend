@@ -27,12 +27,11 @@ from fastapi.staticfiles import StaticFiles
 
 
 # =============================================================================
-# Gullbrief main.py – v3.9
+# Gullbrief main.py – v4.0
 # - Snapshot-basert public rendering for raskere lastetid
+# - UI-tekst ryddet opp ("Kort tekst" fjernet)
+# - Premium-hint under nyheter forbedret
 # - Direkte X/Twitter-posting med OAuth 1.0a
-# - Gull/XAUUSD/makro-filter for nyheter
-# - Engelske SEO-signaler i norske sider
-# - 5 gratis nyheter / flere i premium
 # - Premium / archive / Stripe / feed / sitemap / news-sitemap beholdt
 # =============================================================================
 
@@ -156,7 +155,7 @@ CONTEXT_WORDS = [
 # App + CORS + Static
 # =============================================================================
 
-app = FastAPI(title=f"{APP_NAME} Backend", version="3.9", docs_url=None, redoc_url=None)
+app = FastAPI(title=f"{APP_NAME} Backend", version="4.0", docs_url=None, redoc_url=None)
 
 origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
@@ -217,7 +216,7 @@ def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: i
 
 def http_get_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> str:
     h = headers or {}
-    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/3.9)")
+    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/4.0)")
     h.setdefault("Accept", "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1")
     r = requests.get(url, headers=h, timeout=timeout, allow_redirects=True)
     r.raise_for_status()
@@ -626,7 +625,7 @@ class YahooPrice:
 
 
 def fetch_yahoo_chart(symbol: str, range_: str, interval: str) -> Dict[str, Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.9)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/4.0)"}
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
     return http_get_json(url, headers=headers)
 
@@ -826,7 +825,7 @@ def fetch_headlines(limit: int = FULL_HEADLINES_LIMIT) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
 
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.9)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/4.0)"}
     all_items: List[Dict[str, str]] = []
 
     for feed_url in RSS_FEEDS:
@@ -1092,7 +1091,7 @@ def build_brief() -> Dict[str, Any]:
 
     return {
         "updated_at": yp.ts,
-        "version": "3.9",
+        "version": "4.0",
         "symbol": yp.symbol,
         "currency": yp.currency,
         "price_usd": yp.last,
@@ -1158,7 +1157,7 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
 
     return {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.9"),
+        "version": data.get("version", "4.0"),
         "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
         "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
         "macro": {"mode": mode, "summary_short": summary},
@@ -1243,7 +1242,7 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
 
     rec = {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.9"),
+        "version": data.get("version", "4.0"),
         "symbol": data.get("symbol"),
         "price_usd": data.get("price_usd"),
         "change_pct": data.get("change_pct"),
@@ -1763,7 +1762,7 @@ INDEX_BODY_TEMPLATE = """
       <p class="muted" style="margin-top:12px" id="reason">–</p>
 
       <h2 style="margin-top:14px">Analyse</h2>
-      <p class="muted" id="macro">–</p>
+      <p class="muted" id="macro"></p>
       <div class="premiumhint">
         Les full analyse, flere nyheter og signalhistorikk i <a href="/premium">Premium</a>.
       </div>
@@ -1813,7 +1812,7 @@ INDEX_BODY_TEMPLATE = """
     const hint = $("premiumNewsHint");
     if(total > freeLimit){
       hint.style.display = "";
-      hint.innerHTML = `Viser ${freeLimit} gratis nyheter. Premium gir tilgang til flere markedssaker og arkiv. <a href="/premium">Åpne Premium</a>`;
+      hint.innerHTML = `Viser ${freeLimit} nylige artikler. Premium gir tilgang til flere markedssaker og arkiv. <a href="/premium">Åpne Premium</a>`;
     }else{
       hint.style.display = "none";
       hint.textContent = "";
@@ -1827,8 +1826,8 @@ INDEX_BODY_TEMPLATE = """
     const state = data?.signal?.state || "neutral";
     $("signalText").textContent = "Signal: " + state;
     $("signalPill").className = "pill " + pillClass(state);
-    $("reason").textContent = data?.signal?.reason_short || "–";
-    $("macro").textContent = data?.macro?.summary_short || "–";
+    $("reason").textContent = data?.signal?.reason_short || "";
+    $("macro").textContent = data?.macro?.summary_short || "";
     renderHeadlines(data);
   }
 
@@ -1976,8 +1975,7 @@ SEO_LANDING_TEMPLATE = """
       <div class="sub" id="change">–</div>
       <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
       <p class="muted" style="margin-top:12px" id="reason">–</p>
-      <h2 style="margin-top:14px">Kort tekst</h2>
-      <p class="muted" id="macro">–</p>
+      <p class="muted" id="macro"></p>
       <div class="premiumhint">
         Full analyse, flere nyheter og signalhistorikk ligger i <a href="/premium">Premium</a>.
       </div>
@@ -2025,7 +2023,7 @@ SEO_LANDING_TEMPLATE = """
     const hint = $("premiumNewsHint");
     if(total > freeLimit){
       hint.style.display = "";
-      hint.innerHTML = `Viser ${freeLimit} gratis nyheter. Premium gir tilgang til flere markedssaker og arkiv. <a href="/premium">Åpne Premium</a>`;
+      hint.innerHTML = `Viser ${freeLimit} nylige artikler. Premium gir tilgang til flere markedssaker og arkiv. <a href="/premium">Åpne Premium</a>`;
     }else{
       hint.style.display = "none";
       hint.textContent = "";
@@ -2039,8 +2037,8 @@ SEO_LANDING_TEMPLATE = """
     const state = data?.signal?.state || "neutral";
     $("signalText").textContent = "Signal: " + state;
     $("signalPill").className = "pill " + pillClass(state);
-    $("reason").textContent = data?.signal?.reason_short || "–";
-    $("macro").textContent = data?.macro?.summary_short || "–";
+    $("reason").textContent = data?.signal?.reason_short || "";
+    $("macro").textContent = data?.macro?.summary_short || "";
     renderHeadlines(data);
   }
 
@@ -2884,7 +2882,7 @@ def health():
             "smtp_enabled": brevo_configured(),
             "social_daily_enabled": SOCIAL_DAILY_ENABLED,
             "social_configured": x_configured(),
-            "version": "3.9",
+            "version": "4.0",
         }
     )
 
