@@ -32,14 +32,16 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 
+
 # =============================================================================
-# Gullbrief main.py – v3.3
-# - Skiller tydelig mellom: Analyse / Prognose / XAUUSD (egen tekst per side)
-# - Ett OpenAI-kall som returnerer 3 tekster + premium ekstra
-# - Premium får mer: premium_insight lagres i historikk + brukes i premium-rapport
-# - Stabil RSS (uten Google redirect hacks)
-# - Beholder Stripe/Brevo/SEO/Arkiv/Tasks-endpoints
+# Gullbrief main.py – v3.4
+# - Tydelig skille mellom Analyse / Prognose / XAUUSD
+# - Ett OpenAI-kall returnerer analysis / forecast / xauusd / premium
+# - Premium får mer: tekniske nivåer, scenario, "hva bryter signalet", watchlist
+# - Stabil RSS (direkte finanskilder, ingen Google redirect-rot)
+# - Beholder Stripe / Brevo / Premium / Arkiv / SEO / Feed / Sitemap
 # =============================================================================
+
 
 # =============================================================================
 # Config
@@ -64,25 +66,23 @@ RSS_FEEDS_ENV = os.getenv(
 RSS_FEEDS = [u.strip() for u in RSS_FEEDS_ENV.split(",") if u.strip()]
 
 HISTORY_PATH = os.getenv("HISTORY_PATH", "data/history.jsonl").strip()
-
-# Admin/dev key (alltid gyldig). Sett i Render env (PREMIUM_API_KEY).
-ADMIN_API_KEY = os.getenv("PREMIUM_API_KEY", "gullbrief-dev").strip()
-
 DB_PATH = os.getenv("DB_PATH", "data/app.db").strip()
 
-# Base URL for canonical/sitemap. If empty -> detect from request headers
+# Admin/dev key (alltid gyldig). Sett i Render env som PREMIUM_API_KEY.
+ADMIN_API_KEY = os.getenv("PREMIUM_API_KEY", "gullbrief-dev").strip()
+
 BASE_URL = os.getenv("BASE_URL", "").strip().rstrip("/")
 
-# Brevo Transactional API
+# Brevo
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
 SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "").strip()
 SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", APP_NAME).strip()
 
-# Stripe defaults (read dynamically too)
+# Stripe
 STRIPE_SUCCESS_URL_DEFAULT = os.getenv("STRIPE_SUCCESS_URL", "").strip()
 STRIPE_CANCEL_URL_DEFAULT = os.getenv("STRIPE_CANCEL_URL", "").strip()
 
-# Google Search Console verification
+# Search Console
 GOOGLE_SITE_VERIFICATION = os.getenv("GOOGLE_SITE_VERIFICATION", "").strip()
 if not GOOGLE_SITE_VERIFICATION:
     GOOGLE_SITE_VERIFICATION = "google-site-verification=W5dv0qhSwRLBDZH6YcVwJtqybjReTSmbjggqvhTJvVI"
@@ -92,18 +92,16 @@ if GOOGLE_SITE_VERIFICATION.startswith("google-site-verification="):
 else:
     GOOGLE_SITE_VERIFICATION_CONTENT = GOOGLE_SITE_VERIFICATION
 
-# Optional: Twitter handle for meta
 TWITTER_SITE = os.getenv("TWITTER_SITE", "").strip()
-
-# SEO knobs
 SITEMAP_ARCHIVE_DAYS = int(os.getenv("SITEMAP_ARCHIVE_DAYS", "45"))
 FEED_ITEMS = int(os.getenv("FEED_ITEMS", "20"))
+
 
 # =============================================================================
 # App + CORS + Static
 # =============================================================================
 
-app = FastAPI(title=f"{APP_NAME} Backend", version="3.3", docs_url=None, redoc_url=None)
+app = FastAPI(title=f"{APP_NAME} Backend", version="3.4", docs_url=None, redoc_url=None)
 
 origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
@@ -136,6 +134,7 @@ except Exception:
 def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+
 def safe_float(x: Any) -> Optional[float]:
     try:
         if x is None:
@@ -147,11 +146,13 @@ def safe_float(x: Any) -> Optional[float]:
     except Exception:
         return None
 
+
 def domain_of(url: str) -> str:
     try:
         return urlparse(url).netloc.replace("www.", "")
     except Exception:
         return ""
+
 
 def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> Dict[str, Any]:
     req = urllib.request.Request(url, headers=headers or {})
@@ -159,13 +160,15 @@ def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: i
         data = resp.read()
     return json.loads(data.decode("utf-8"))
 
+
 def http_get_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> str:
     h = headers or {}
-    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/3.3)")
+    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/3.4)")
     h.setdefault("Accept", "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1")
     r = requests.get(url, headers=h, timeout=timeout, allow_redirects=True)
     r.raise_for_status()
     return r.text
+
 
 def get_base_url(request: Request) -> str:
     if BASE_URL:
@@ -174,21 +177,30 @@ def get_base_url(request: Request) -> str:
     host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
     return f"{proto}://{host}".rstrip("/")
 
+
 def dt_from_rss(pub: str) -> Optional[datetime]:
     try:
         return parsedate_to_datetime(pub) if pub else None
     except Exception:
         return None
 
-def date_yyyy_mm_dd_from_iso_or_rss(dt_str: str) -> Optional[str]:
+
+def parse_iso_or_rss(dt_str: str) -> Optional[datetime]:
     t = dt_from_rss(dt_str)
     if t:
-        return t.date().isoformat()
-    # fallback: try ISO
+        return t
     try:
-        return datetime.fromisoformat(dt_str.replace("Z", "+00:00")).date().isoformat()
+        return datetime.fromisoformat(str(dt_str).replace("Z", "+00:00"))
     except Exception:
         return None
+
+
+def date_yyyy_mm_dd_from_iso_or_rss(dt_str: str) -> Optional[str]:
+    t = parse_iso_or_rss(dt_str)
+    if not t:
+        return None
+    return t.date().isoformat()
+
 
 def _escape_html(s: str) -> str:
     return (
@@ -200,6 +212,7 @@ def _escape_html(s: str) -> str:
         .replace("'", "&#39;")
     )
 
+
 def _replace_many(template: str, mapping: Dict[str, str]) -> str:
     out = template
     for k, v in mapping.items():
@@ -208,7 +221,7 @@ def _replace_many(template: str, mapping: Dict[str, str]) -> str:
 
 
 # =============================================================================
-# Stripe helpers (read env dynamically)
+# Stripe helpers
 # =============================================================================
 
 def stripe_env() -> Dict[str, str]:
@@ -225,9 +238,11 @@ def stripe_env() -> Dict[str, str]:
         "webhook_secret": whsec,
     }
 
+
 def stripe_ready() -> bool:
     e = stripe_env()
     return bool(e["secret_key"] and e["price_id"])
+
 
 def require_stripe(request: Optional[Request] = None) -> Dict[str, str]:
     e = stripe_env()
@@ -241,11 +256,12 @@ def require_stripe(request: Optional[Request] = None) -> Dict[str, str]:
             e["success_url"] = f"{base}/success"
         if not e["cancel_url"]:
             e["cancel_url"] = f"{base}/premium"
+
     return e
 
 
 # =============================================================================
-# DB (SQLite)
+# DB
 # =============================================================================
 
 def _db() -> sqlite3.Connection:
@@ -255,12 +271,14 @@ def _db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     return conn
 
+
 def _try_add_column(conn: sqlite3.Connection, table: str, column_sql: str) -> None:
     try:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_sql}")
         conn.commit()
     except Exception:
         pass
+
 
 def init_db() -> None:
     conn = _db()
@@ -299,12 +317,15 @@ def init_db() -> None:
     """)
 
     _try_add_column(conn, "email_subscriptions", "last_macro_sent_date TEXT")
+
     conn.commit()
     conn.close()
+
 
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
+
 
 def is_valid_key(k: Optional[str]) -> bool:
     if not k:
@@ -314,7 +335,8 @@ def is_valid_key(k: Optional[str]) -> bool:
     conn = _db()
     row = conn.execute("SELECT api_key,status FROM api_keys WHERE api_key=?", (k,)).fetchone()
     conn.close()
-    return bool(row) and (row["status"] == "active")
+    return bool(row) and row["status"] == "active"
+
 
 def _upsert_key_for_stripe(email: str, customer_id: str, subscription_id: str) -> str:
     conn = _db()
@@ -342,17 +364,20 @@ def _upsert_key_for_stripe(email: str, customer_id: str, subscription_id: str) -
     conn.close()
     return api_key
 
+
 def _set_key_status_for_customer(customer_id: str, status: str) -> None:
     conn = _db()
     conn.execute("UPDATE api_keys SET status=? WHERE stripe_customer_id=?", (status, customer_id))
     conn.commit()
     conn.close()
 
+
 def _already_processed(event_id: str) -> bool:
     conn = _db()
     row = conn.execute("SELECT 1 FROM stripe_events WHERE event_id=?", (event_id,)).fetchone()
     conn.close()
     return bool(row)
+
 
 def _mark_processed(event_id: str, event_type: str) -> None:
     conn = _db()
@@ -377,10 +402,12 @@ class YahooPrice:
     currency: Optional[str]
     ts: str
 
+
 def fetch_yahoo_chart(symbol: str, range_: str, interval: str) -> Dict[str, Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.3)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.4)"}
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
     return http_get_json(url, headers=headers)
+
 
 def extract_closes(chart_json: Dict[str, Any]) -> List[float]:
     try:
@@ -390,6 +417,7 @@ def extract_closes(chart_json: Dict[str, Any]) -> List[float]:
     except Exception:
         return []
 
+
 def fetch_yahoo_price(symbol: str) -> YahooPrice:
     chart = fetch_yahoo_chart(symbol, range_="5d", interval="1d")
     closes = extract_closes(chart)
@@ -397,11 +425,13 @@ def fetch_yahoo_price(symbol: str) -> YahooPrice:
         raise RuntimeError(f"Yahoo: insufficient closes for {symbol}")
     last, prev = closes[-1], closes[-2]
     change_pct = ((last - prev) / prev) * 100.0 if prev else None
+
     currency = None
     try:
         currency = chart["chart"]["result"][0]["meta"].get("currency")
     except Exception:
         pass
+
     return YahooPrice(
         symbol=symbol,
         last=float(last),
@@ -411,10 +441,12 @@ def fetch_yahoo_price(symbol: str) -> YahooPrice:
         ts=iso_now(),
     )
 
+
 def sma(values: List[float], n: int) -> Optional[float]:
     if len(values) < n:
         return None
     return sum(values[-n:]) / n
+
 
 def rsi(values: List[float], period: int = 14) -> Optional[float]:
     if len(values) < period + 1:
@@ -434,6 +466,7 @@ def rsi(values: List[float], period: int = 14) -> Optional[float]:
     rs = gains / losses
     return 100.0 - (100.0 / (1.0 + rs))
 
+
 def trend_score_from_mas(last: float, s20: Optional[float], s50: Optional[float]) -> Optional[int]:
     if s20 is None or s50 is None:
         return None
@@ -441,6 +474,7 @@ def trend_score_from_mas(last: float, s20: Optional[float], s50: Optional[float]
     score += 15 if last > s20 else -15
     score += 20 if s20 > s50 else -20
     return max(0, min(100, int(score)))
+
 
 def compute_signal(symbol: str) -> Tuple[str, Dict[str, Any]]:
     chart = fetch_yahoo_chart(symbol, range_="3mo", interval="1d")
@@ -458,13 +492,75 @@ def compute_signal(symbol: str) -> Tuple[str, Dict[str, Any]]:
     tscore = trend_score_from_mas(last, s20, s50)
 
     if s20 is None or s50 is None:
-        return "neutral", {"reason": "Kunne ikke beregne glidende snitt.", "rsi14": rsi14v, "trend_score": tscore}
+        return "neutral", {
+            "reason": "Kunne ikke beregne glidende snitt.",
+            "rsi14": rsi14v,
+            "trend_score": tscore,
+        }
 
     if last > s20 > s50:
-        return "bullish", {"reason": "Pris over SMA20 og SMA50, med positiv trend.", "rsi14": rsi14v, "trend_score": tscore}
+        return "bullish", {
+            "reason": "Pris over SMA20 og SMA50, med positiv trend.",
+            "rsi14": rsi14v,
+            "trend_score": tscore,
+        }
     if last < s20 < s50:
-        return "bearish", {"reason": "Pris under SMA20 og SMA50, med negativ trend.", "rsi14": rsi14v, "trend_score": tscore}
-    return "neutral", {"reason": "Blandet bilde mellom pris og glidende snitt.", "rsi14": rsi14v, "trend_score": tscore}
+        return "bearish", {
+            "reason": "Pris under SMA20 og SMA50, med negativ trend.",
+            "rsi14": rsi14v,
+            "trend_score": tscore,
+        }
+    return "neutral", {
+        "reason": "Blandet bilde mellom pris og glidende snitt.",
+        "rsi14": rsi14v,
+        "trend_score": tscore,
+    }
+
+
+def compute_technical_levels(symbol: str) -> Dict[str, Any]:
+    """
+    Enkle, deterministiske nivåer basert på closes.
+    """
+    chart = fetch_yahoo_chart(symbol, range_="6mo", interval="1d")
+    closes = extract_closes(chart)
+
+    if len(closes) < 60:
+        return {
+            "support_near": None,
+            "support_major": None,
+            "resistance_near": None,
+            "resistance_major": None,
+            "sma20": None,
+            "sma50": None,
+            "high_20d": None,
+            "low_20d": None,
+            "high_60d": None,
+            "low_60d": None,
+        }
+
+    last_20 = closes[-20:]
+    last_60 = closes[-60:]
+
+    s20 = sma(closes, 20)
+    s50 = sma(closes, 50)
+
+    low_20 = min(last_20) if last_20 else None
+    high_20 = max(last_20) if last_20 else None
+    low_60 = min(last_60) if last_60 else None
+    high_60 = max(last_60) if last_60 else None
+
+    return {
+        "support_near": low_20,
+        "support_major": low_60,
+        "resistance_near": high_20,
+        "resistance_major": high_60,
+        "sma20": s20,
+        "sma50": s50,
+        "high_20d": high_20,
+        "low_20d": low_20,
+        "high_60d": high_60,
+        "low_60d": low_60,
+    }
 
 
 # =============================================================================
@@ -493,11 +589,12 @@ def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
             items.append({"title": title, "link": link, "source": channel_title, "published": pub})
     return items
 
+
 def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
 
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.3)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.4)"}
     all_items: List[Dict[str, str]] = []
 
     for feed_url in RSS_FEEDS:
@@ -507,14 +604,13 @@ def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
         except Exception:
             continue
 
-    # Nyeste først (items uten dato nederst)
-    def _key(x: Dict[str, str]) -> Tuple[int, float]:
+    def _sort_key(x: Dict[str, str]) -> Tuple[int, float]:
         d = dt_from_rss(x.get("published", "") or "")
         if not d:
             return (0, 0.0)
         return (1, d.timestamp())
 
-    all_items.sort(key=_key, reverse=True)
+    all_items.sort(key=_sort_key, reverse=True)
 
     seen, out = set(), []
     for it in all_items:
@@ -522,7 +618,7 @@ def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
         if not lk:
             continue
 
-        # Filtrer bort Bloomberg "videos" (gir ofte støy)
+        # Filtrer vekk Bloomberg video-støy
         if "/news/videos/" in lk:
             continue
 
@@ -537,7 +633,7 @@ def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
 
 
 # =============================================================================
-# OpenAI: 3 tekster + premium ekstra (ett kall)
+# OpenAI bundle
 # =============================================================================
 
 def summarize_bundle_with_openai(
@@ -549,9 +645,16 @@ def summarize_bundle_with_openai(
     change_pct: Optional[float],
     rsi14: Optional[float],
     trend_score: Optional[int],
+    levels: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     """
-    Returns dict with keys: analysis, forecast, xauusd, premium
+    Returns:
+      {
+        "analysis": "...",
+        "forecast": "...",
+        "xauusd": "...",
+        "premium": "..."
+      }
     """
     out = {"analysis": "", "forecast": "", "xauusd": "", "premium": ""}
 
@@ -562,16 +665,23 @@ def summarize_bundle_with_openai(
     if not titles:
         return out
 
+    levels = levels or {}
+
+    def fmt_level(x: Any) -> str:
+        v = safe_float(x)
+        return f"{v:.2f}" if v is not None else "ukjent"
+
     price_line = f"{price_usd:.2f} USD" if isinstance(price_usd, (int, float)) else "ukjent"
     chg_line = f"{change_pct:+.2f}%" if isinstance(change_pct, (int, float)) else "ukjent"
     rsi_line = f"{rsi14:.1f}" if isinstance(rsi14, (int, float)) else "ukjent"
     ts_line = f"{trend_score}" if isinstance(trend_score, int) else "ukjent"
 
     prompt = (
-        f"Du er {APP_NAME}. Du skal skrive tre forskjellige tekster om gull basert på overskriftene.\n"
+        f"Du er {APP_NAME}. Du skal skrive fire forskjellige tekster om gull basert på overskriftene.\n"
         "Viktig:\n"
         "- Norsk, nøkternt, ingen emojis, ingen investeringsråd.\n"
         "- Ikke finn opp fakta. Hvis overskriftene ikke støtter noe, si 'uklart' eller 'ikke bekreftet i overskriftene'.\n"
+        "- Ikke gjenta samme formulering i alle feltene.\n"
         "- Svar KUN som gyldig JSON med nøyaktig disse nøklene:\n"
         '  {"analysis":"...", "forecast":"...", "xauusd":"...", "premium":"..."}\n\n'
         "Kontekst:\n"
@@ -581,13 +691,33 @@ def summarize_bundle_with_openai(
         f"- RSI(14): {rsi_line}\n"
         f"- Trend score: {ts_line}/100\n"
         f"- Signal: {signal_state.upper()}\n"
-        f"- Indikator-årsak: {signal_reason}\n\n"
+        f"- Indikator-årsak: {signal_reason}\n"
+        f"- Nær støtte: {fmt_level(levels.get('support_near'))}\n"
+        f"- Hovedstøtte: {fmt_level(levels.get('support_major'))}\n"
+        f"- Nær motstand: {fmt_level(levels.get('resistance_near'))}\n"
+        f"- Hovedmotstand: {fmt_level(levels.get('resistance_major'))}\n"
+        f"- SMA20: {fmt_level(levels.get('sma20'))}\n"
+        f"- SMA50: {fmt_level(levels.get('sma50'))}\n\n"
         "Overskrifter:\n- " + "\n- ".join(titles) + "\n\n"
         "Skriv:\n"
-        "- analysis: 5–7 linjer, forklar hva som driver gull nå og hvorfor.\n"
-        "- forecast: 24–72t scenario: base/bull/bear + triggere, 6–10 linjer.\n"
-        "- xauusd: spot gull vs USD: USD/DXY, renter, risk-on/off, 5–7 linjer.\n"
-        "- premium: 8–14 linjer. Mer konkret, med 'Hva kan endre bildet' (3 punkt). Ikke prisnivåer med falsk presisjon.\n"
+        "- analysis: 5–7 linjer. Forklar hva som driver gull nå og hvorfor.\n"
+        "- forecast: 6–10 linjer. 24–72t scenario med base/bull/bear og tydelige triggere.\n"
+        "- xauusd: 5–7 linjer. Fokuser på spot gull mot USD, DXY, renter og risk-on/off.\n"
+        "- premium: 12–20 linjer. Struktur:\n"
+        "  Tittel: én linje\n"
+        "  Marked akkurat nå: 3–5 linjer\n"
+        "  Teknisk bilde: 3–5 linjer, bruk støtte/motstand/SMA\n"
+        "  Scenarier 24–72t:\n"
+        "  - Base: ...\n"
+        "  - Bull: ...\n"
+        "  - Bear: ...\n"
+        "  Hva bryter signalet:\n"
+        "  - ...\n"
+        "  - ...\n"
+        "  Watchlist neste 24–72t:\n"
+        "  - ...\n"
+        "  - ...\n"
+        "  - ...\n"
     )
 
     try:
@@ -597,12 +727,10 @@ def summarize_bundle_with_openai(
         resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
         txt = (resp.output_text or "").strip()
 
-        # Robust JSON parse (noen ganger kommer det med tekst rundt)
-        # Finn første { og siste }
         i = txt.find("{")
         j = txt.rfind("}")
         if i >= 0 and j > i:
-            txt = txt[i : j + 1]
+            txt = txt[i:j + 1]
 
         data = json.loads(txt)
 
@@ -616,10 +744,6 @@ def summarize_bundle_with_openai(
         return out
 
 
-# =============================================================================
-# Premium report AI (bruker premium-feltet fra bundle)
-# =============================================================================
-
 def premium_report_ai_from_bundle(
     *,
     bundle: Dict[str, str],
@@ -630,32 +754,70 @@ def premium_report_ai_from_bundle(
     rsi14: Optional[float],
     trend_score: Optional[int],
     headlines: List[Dict[str, str]],
+    levels: Optional[Dict[str, Any]] = None,
 ) -> str:
-    # Hvis OpenAI er av, lag en enkel fallback
-    if not OPENAI_API_KEY:
-        titles = [h.get("title", "").strip() for h in headlines if h.get("title")][:8]
-        price_line = f"Pris: {price_usd:.2f} USD" if isinstance(price_usd, (int, float)) else "Pris: (ukjent)"
-        chg_line = f"Døgnendring: {change_pct:+.2f}%" if isinstance(change_pct, (int, float)) else "Døgnendring: (ukjent)"
-        rsi_line = f"RSI(14): {rsi14:.1f}" if isinstance(rsi14, (int, float)) else "RSI(14): (ukjent)"
-        ts_line = f"Trend score: {trend_score}/100" if isinstance(trend_score, int) else "Trend score: (ukjent)"
+    levels = levels or {}
+
+    def fmt_num(x: Any, suffix: str = "") -> str:
+        v = safe_float(x)
+        if v is None:
+            return "ukjent"
+        return f"{v:.2f}{suffix}"
+
+    price_line = fmt_num(price_usd, " USD")
+    chg_line = f"{change_pct:+.2f}%" if isinstance(change_pct, (int, float)) else "ukjent"
+    rsi_line = f"{rsi14:.1f}" if isinstance(rsi14, (int, float)) else "ukjent"
+    ts_line = f"{trend_score}/100" if isinstance(trend_score, int) else "ukjent"
+
+    support_near = fmt_num(levels.get("support_near"))
+    support_major = fmt_num(levels.get("support_major"))
+    resistance_near = fmt_num(levels.get("resistance_near"))
+    resistance_major = fmt_num(levels.get("resistance_major"))
+    sma20_line = fmt_num(levels.get("sma20"))
+    sma50_line = fmt_num(levels.get("sma50"))
+
+    premium_text = (bundle.get("premium") or "").strip()
+    analysis_text = (bundle.get("analysis") or "").strip()
+    forecast_text = (bundle.get("forecast") or "").strip()
+    xauusd_text = (bundle.get("xauusd") or "").strip()
+
+    if premium_text:
         return (
             f"{APP_NAME} Premium ({datetime.now(timezone.utc).date().isoformat()})\n"
-            f"{price_line} | {chg_line} | {rsi_line} | {ts_line}\n"
-            f"Signal: {signal_state.upper()} ({signal_reason})\n\n"
-            "Nyhetsdriver (utdrag):\n- " + ("\n- ".join(titles) if titles else "(Ingen)") + "\n\n"
-            "Hva kan endre bildet (24–72t):\n"
-            "- USD/renter beveger seg raskt\n"
-            "- Inflasjon-/vekstdata overrasker\n"
-            "- Geopolitikk/risikoappetitt skifter\n"
+            f"Pris: {price_line} | Døgnendring: {chg_line} | RSI(14): {rsi_line} | Trend score: {ts_line}\n"
+            f"Signal: {signal_state.upper()} ({signal_reason})\n"
+            f"Støtte nær: {support_near} | Hovedstøtte: {support_major}\n"
+            f"Motstand nær: {resistance_near} | Hovedmotstand: {resistance_major}\n"
+            f"SMA20: {sma20_line} | SMA50: {sma50_line}\n\n"
+            f"{premium_text}"
         )
 
-    # Med OpenAI: bruk bundle["premium"] (allerede generert)
-    txt = (bundle.get("premium") or "").strip()
-    if txt:
-        return txt
+    titles = [h.get("title", "").strip() for h in headlines if h.get("title")][:6]
+    titles_block = "\n- ".join(titles) if titles else "(Ingen overskrifter tilgjengelig)"
 
-    # fallback hvis JSON parsing feilet
-    return (bundle.get("analysis") or "").strip()
+    return (
+        f"{APP_NAME} Premium ({datetime.now(timezone.utc).date().isoformat()})\n"
+        f"Pris: {price_line} | Døgnendring: {chg_line} | RSI(14): {rsi_line} | Trend score: {ts_line}\n"
+        f"Signal: {signal_state.upper()} ({signal_reason})\n"
+        f"Støtte nær: {support_near} | Hovedstøtte: {support_major}\n"
+        f"Motstand nær: {resistance_near} | Hovedmotstand: {resistance_major}\n"
+        f"SMA20: {sma20_line} | SMA50: {sma50_line}\n\n"
+        "Marked akkurat nå:\n"
+        f"{analysis_text or 'Markedet er blandet og nyhetsbildet gir ikke nok til et tydelig premium-sammendrag akkurat nå.'}\n\n"
+        "Scenarier 24–72t:\n"
+        f"{forecast_text or 'Base: videre konsolidering. Bull: svakere USD/renter. Bear: sterkere USD og høyere realrenter.'}\n\n"
+        "XAUUSD-fokus:\n"
+        f"{xauusd_text or 'Se spesielt på DXY, amerikanske renter og bred risk-on/off i markedet.'}\n\n"
+        "Nyhetsdriver (utdrag):\n- "
+        f"{titles_block}\n\n"
+        "Hva bryter signalet:\n"
+        "- Pris klart under kortsiktig støtte og SMA20\n"
+        "- Tydelig styrking i USD eller løft i renter\n\n"
+        "Watchlist neste 24–72t:\n"
+        "- DXY\n"
+        "- 10Y-renter / realrenter\n"
+        "- Makrooverskrifter med direkte effekt på gull"
+    )
 
 
 # =============================================================================
@@ -667,7 +829,9 @@ class CacheState:
     ts: float = 0.0
     data: Optional[Dict[str, Any]] = None
 
+
 CACHE = CacheState()
+
 
 def build_brief() -> Dict[str, Any]:
     yp = fetch_yahoo_price(YAHOO_SYMBOL)
@@ -676,6 +840,7 @@ def build_brief() -> Dict[str, Any]:
     rsi14v = safe_float(sig_meta.get("rsi14"))
     tscore = sig_meta.get("trend_score") if isinstance(sig_meta.get("trend_score"), int) else None
 
+    levels = compute_technical_levels(YAHOO_SYMBOL)
     headlines = fetch_headlines(limit=10)
 
     bundle = summarize_bundle_with_openai(
@@ -686,9 +851,9 @@ def build_brief() -> Dict[str, Any]:
         change_pct=yp.change_pct,
         rsi14=rsi14v,
         trend_score=tscore,
+        levels=levels,
     )
 
-    # Fallback
     fallback = (" | ".join([h["title"] for h in headlines[:3] if h.get("title")]) or "Ingen nyheter tilgjengelig akkurat nå.")
 
     analysis_text = (bundle.get("analysis") or "").strip() or fallback
@@ -698,7 +863,7 @@ def build_brief() -> Dict[str, Any]:
 
     return {
         "updated_at": yp.ts,
-        "version": "3.3",
+        "version": "3.4",
         "symbol": yp.symbol,
         "currency": yp.currency,
         "price_usd": yp.last,
@@ -707,20 +872,22 @@ def build_brief() -> Dict[str, Any]:
         "signal_reason": signal_reason,
         "rsi14": rsi14v,
         "trend_score": tscore,
+        "levels": levels,
 
-        # Backwards compatible field:
+        # Backwards compatible
         "macro_summary": analysis_text,
 
-        # New distinct texts:
+        # Distinct texts
         "analysis": analysis_text,
         "forecast": forecast_text,
         "xauusd": xauusd_text,
 
-        # Extra for paying users (also stored in history):
+        # Premium
         "premium_insight": premium_insight,
 
         "headlines": headlines,
     }
+
 
 def get_cached_brief(force_refresh: bool) -> Dict[str, Any]:
     now = time.time()
@@ -734,6 +901,7 @@ def get_cached_brief(force_refresh: bool) -> Dict[str, Any]:
     CACHE.data = data
     CACHE.ts = now
     return data
+
 
 def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[str, Any]:
     mode = (mode or "analysis").strip().lower()
@@ -749,7 +917,7 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
 
     return {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.3"),
+        "version": data.get("version", "3.4"),
         "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
         "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
         "macro": {"mode": mode, "summary_short": summary},
@@ -758,13 +926,14 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
 
 
 # =============================================================================
-# History (JSONL) + Returns + Signal-stats
+# History
 # =============================================================================
 
 def _ensure_history_dir() -> pathlib.Path:
     p = pathlib.Path(HISTORY_PATH)
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
+
 
 def _read_last_snapshot() -> Optional[Dict[str, Any]]:
     p = _ensure_history_dir()
@@ -786,16 +955,20 @@ def _read_last_snapshot() -> Optional[Dict[str, Any]]:
         return None
     return None
 
+
 def _should_store_snapshot(new_data: Dict[str, Any], last: Optional[Dict[str, Any]]) -> bool:
     if last is None:
         return True
+
     new_signal = (new_data.get("signal") or "").lower()
     last_signal = (last.get("signal") or "").lower()
     if new_signal and new_signal != last_signal:
         return True
-    new_dt = dt_from_rss(new_data.get("updated_at", "")) or datetime.now(timezone.utc)
-    last_dt = dt_from_rss(last.get("updated_at", "")) or datetime.now(timezone.utc)
+
+    new_dt = parse_iso_or_rss(new_data.get("updated_at", "")) or datetime.now(timezone.utc)
+    last_dt = parse_iso_or_rss(last.get("updated_at", "")) or datetime.now(timezone.utc)
     return new_dt.date() != last_dt.date()
+
 
 def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
     p = _ensure_history_dir()
@@ -803,11 +976,12 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
     if not _should_store_snapshot(data, last):
         return False
 
-    # Lag premium report basert på bundle/premium_insight
     rep = premium_report_ai_from_bundle(
         bundle={
             "premium": (data.get("premium_insight") or ""),
             "analysis": (data.get("analysis") or data.get("macro_summary") or ""),
+            "forecast": (data.get("forecast") or ""),
+            "xauusd": (data.get("xauusd") or ""),
         },
         signal_state=str(data.get("signal") or "neutral"),
         signal_reason=str(data.get("signal_reason") or ""),
@@ -816,11 +990,12 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
         rsi14=safe_float(data.get("rsi14")),
         trend_score=data.get("trend_score") if isinstance(data.get("trend_score"), int) else None,
         headlines=data.get("headlines", []),
+        levels=data.get("levels") if isinstance(data.get("levels"), dict) else {},
     )
 
     rec = {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.3"),
+        "version": data.get("version", "3.4"),
         "symbol": data.get("symbol"),
         "price_usd": data.get("price_usd"),
         "change_pct": data.get("change_pct"),
@@ -828,11 +1003,9 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
         "signal_reason": data.get("signal_reason", ""),
         "rsi14": data.get("rsi14"),
         "trend_score": data.get("trend_score"),
+        "levels": data.get("levels", {}),
 
-        # behold bakoverkompatibilitet:
         "macro_summary": data.get("macro_summary", ""),
-
-        # nye:
         "analysis": data.get("analysis", ""),
         "forecast": data.get("forecast", ""),
         "xauusd": data.get("xauusd", ""),
@@ -845,6 +1018,7 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
     with p.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     return True
+
 
 def read_history(limit: int = 500) -> List[Dict[str, Any]]:
     p = _ensure_history_dir()
@@ -862,8 +1036,9 @@ def read_history(limit: int = 500) -> List[Dict[str, Any]]:
                 continue
     return rows[-limit:]
 
+
 def add_forward_returns(rows: List[Dict[str, Any]], days_list=(7, 30)) -> List[Dict[str, Any]]:
-    parsed: List[Tuple[Optional[datetime], Dict[str, Any]]] = [(dt_from_rss(r.get("updated_at", "")) or None, r) for r in rows]
+    parsed: List[Tuple[Optional[datetime], Dict[str, Any]]] = [(parse_iso_or_rss(r.get("updated_at", "")), r) for r in rows]
     for t, r in parsed:
         p0 = safe_float(r.get("price_usd"))
         if t is None or p0 is None or p0 == 0:
@@ -879,6 +1054,7 @@ def add_forward_returns(rows: List[Dict[str, Any]], days_list=(7, 30)) -> List[D
                     break
             r[f"return_{d}d_pct"] = None if not p1 else ((p1 - p0) / p0) * 100.0
     return rows
+
 
 def signal_stats_last30(rows_newest_first: List[Dict[str, Any]]) -> Dict[str, Any]:
     sig_rows = []
@@ -922,9 +1098,11 @@ def signal_stats_last30(rows_newest_first: List[Dict[str, Any]]) -> Dict[str, An
         "hit_rate_7d": (hits / evals * 100.0) if evals else None,
     }
 
+
 def latest_signal() -> str:
     last = _read_last_snapshot()
     return (last.get("signal") if last else "") or ""
+
 
 def get_archive_dates(last_n_days: int = 45) -> List[str]:
     rows = read_history(limit=2000)
@@ -951,6 +1129,7 @@ def get_archive_dates(last_n_days: int = 45) -> List[str]:
     dates.sort(reverse=True)
     return dates
 
+
 def load_snapshot_for_date(day: str) -> Optional[Dict[str, Any]]:
     p = _ensure_history_dir()
     if not p.exists():
@@ -972,11 +1151,12 @@ def load_snapshot_for_date(day: str) -> Optional[Dict[str, Any]]:
 
 
 # =============================================================================
-# Email (Brevo)
+# Email
 # =============================================================================
 
 def brevo_configured() -> bool:
     return bool(BREVO_API_KEY and SMTP_FROM_EMAIL)
+
 
 def send_email(to_email: str, subject: str, body: str) -> None:
     if not brevo_configured():
@@ -999,12 +1179,13 @@ def send_email(to_email: str, subject: str, body: str) -> None:
         json=payload,
         timeout=20,
     )
+
     if r.status_code >= 400:
         raise RuntimeError(f"BREVO_HTTP_{r.status_code}: {r.text}")
 
 
 # =============================================================================
-# SEO HTML shell + JSON-LD
+# SEO helpers
 # =============================================================================
 
 def jsonld_website(base: str) -> str:
@@ -1022,6 +1203,7 @@ def jsonld_website(base: str) -> str:
     }
     return '<script type="application/ld+json">' + json.dumps(data, ensure_ascii=False) + "</script>"
 
+
 def jsonld_article(base: str, title: str, description: str, url_path: str, date_published: Optional[str] = None) -> str:
     data: Dict[str, Any] = {
         "@context": "https://schema.org",
@@ -1036,6 +1218,7 @@ def jsonld_article(base: str, title: str, description: str, url_path: str, date_
     if date_published:
         data["datePublished"] = date_published
     return '<script type="application/ld+json">' + json.dumps(data, ensure_ascii=False) + "</script>"
+
 
 COMMON_STYLE = """
 <style>
@@ -1079,6 +1262,7 @@ COMMON_STYLE = """
   .links a{color:var(--muted)}
 </style>
 """
+
 
 def html_shell(
     request: Request,
@@ -1139,7 +1323,7 @@ def html_shell(
 
 
 # =============================================================================
-# Routes: Core APIs
+# Core APIs
 # =============================================================================
 
 @app.get("/health")
@@ -1160,8 +1344,9 @@ def health() -> Dict[str, Any]:
         "stripe_price_id_prefix": (e["price_id"][:10] + "...") if e["price_id"] else "",
         "stripe_webhook_secret_set": bool(e["webhook_secret"]),
         "brevo_enabled": brevo_configured(),
-        "version": "3.3",
+        "version": "3.4",
     }
+
 
 @app.get("/api/debug/stripe")
 def debug_stripe(request: Request) -> Dict[str, Any]:
@@ -1178,6 +1363,7 @@ def debug_stripe(request: Request) -> Dict[str, Any]:
         "webhook_secret_set": bool(e["webhook_secret"]),
     }
 
+
 @app.get("/api/debug/rss2")
 def api_debug_rss2() -> Any:
     out = []
@@ -1190,12 +1376,14 @@ def api_debug_rss2() -> Any:
             out.append({"url": feed_url, "ok": False, "error": str(e)})
     return out
 
+
 @app.get("/api/brief")
 def api_brief(force_refresh: bool = False):
     try:
         return get_cached_brief(force_refresh=force_refresh)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": "BRIEF_FAILED", "message": str(e)})
+
 
 @app.get("/api/brief/refresh")
 def api_brief_refresh():
@@ -1204,6 +1392,7 @@ def api_brief_refresh():
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": "BRIEF_REFRESH_FAILED", "message": str(e)})
 
+
 @app.get("/api/public/today")
 def api_public_today(mode: str = "analysis"):
     try:
@@ -1211,6 +1400,7 @@ def api_public_today(mode: str = "analysis"):
         return map_to_public_today(raw, mode=mode)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": "PUBLIC_TODAY_FAILED", "message": str(e)})
+
 
 @app.get("/api/public/teaser-history")
 def api_teaser_history():
@@ -1230,6 +1420,7 @@ def api_teaser_history():
         })
     return {"count": len(out), "items": out}
 
+
 @app.get("/api/history")
 def api_history(limit: int = 200, x_api_key: str | None = Header(default=None)):
     if not is_valid_key(x_api_key):
@@ -1239,6 +1430,7 @@ def api_history(limit: int = 200, x_api_key: str | None = Header(default=None)):
     newest_first = list(reversed(rows))
     stats = signal_stats_last30(newest_first)
     return {"count": len(rows), "items": rows, "stats": stats}
+
 
 @app.get("/api/premium/report/today")
 def api_premium_report_today(x_api_key: str | None = Header(default=None)):
@@ -1255,6 +1447,8 @@ def api_premium_report_today(x_api_key: str | None = Header(default=None)):
         bundle={
             "premium": (raw.get("premium_insight") or ""),
             "analysis": (raw.get("analysis") or raw.get("macro_summary") or ""),
+            "forecast": (raw.get("forecast") or ""),
+            "xauusd": (raw.get("xauusd") or ""),
         },
         signal_state=str(raw.get("signal") or "neutral"),
         signal_reason=str(raw.get("signal_reason") or ""),
@@ -1263,14 +1457,13 @@ def api_premium_report_today(x_api_key: str | None = Header(default=None)):
         rsi14=safe_float(raw.get("rsi14")),
         trend_score=raw.get("trend_score") if isinstance(raw.get("trend_score"), int) else None,
         headlines=raw.get("headlines", []),
+        levels=raw.get("levels") if isinstance(raw.get("levels"), dict) else {},
     )
     return {"updated_at": iso_now(), "report": rep2 or ""}
 
+
 @app.get("/api/premium/brief")
 def api_premium_brief(x_api_key: str | None = Header(default=None), force_refresh: bool = False):
-    """
-    Betalende får tilgang til premium_insight i samme payload.
-    """
     if not is_valid_key(x_api_key):
         return JSONResponse(status_code=401, content={"error": "PREMIUM_REQUIRED", "message": "Premium kreves."})
     try:
@@ -1281,6 +1474,7 @@ def api_premium_brief(x_api_key: str | None = Header(default=None), force_refres
             "forecast": raw.get("forecast") or "",
             "xauusd": raw.get("xauusd") or "",
             "premium_insight": raw.get("premium_insight") or "",
+            "levels": raw.get("levels") or {},
             "signal": raw.get("signal") or "neutral",
             "signal_reason": raw.get("signal_reason") or "",
             "price_usd": raw.get("price_usd"),
@@ -1291,6 +1485,7 @@ def api_premium_brief(x_api_key: str | None = Header(default=None), force_refres
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": "PREMIUM_BRIEF_FAILED", "message": str(e)})
+
 
 @app.post("/api/premium/subscribe-email")
 async def api_subscribe_email(req: Request, x_api_key: str | None = Header(default=None)):
@@ -1313,7 +1508,7 @@ async def api_subscribe_email(req: Request, x_api_key: str | None = Header(defau
 
 
 # =============================================================================
-# Admin tasks (manual trigger / cron)
+# Admin tasks
 # =============================================================================
 
 @app.get("/api/tasks/check-signal")
@@ -1363,6 +1558,7 @@ def api_check_signal(admin_key: str = ""):
 
     conn.close()
     return {"ok": True, "sent": sent, "signal": sig}
+
 
 @app.get("/api/tasks/send-daily-macro")
 def api_send_daily_macro(admin_key: str = ""):
@@ -1421,6 +1617,7 @@ def api_send_daily_macro(admin_key: str = ""):
 
     conn.close()
     return {"ok": True, "sent": sent, "date": today}
+
 
 @app.get("/api/tasks/send-daily-premium")
 def api_send_daily_premium(admin_key: str = ""):
@@ -1486,12 +1683,14 @@ def api_send_daily_premium(admin_key: str = ""):
     conn.close()
     return {"ok": True, "sent": sent, "date": today}
 
+
 @app.get("/api/tasks/refresh-snapshot")
 def api_refresh_snapshot(admin_key: str = ""):
     if admin_key != ADMIN_API_KEY:
         return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED", "message": "admin_key feil."})
     raw = get_cached_brief(force_refresh=True)
     return {"ok": True, "updated_at": raw.get("updated_at"), "stored": True}
+
 
 @app.post("/api/tasks/send-test-email")
 async def api_send_test_email(req: Request, admin_key: str = ""):
@@ -1520,6 +1719,7 @@ async def api_send_test_email(req: Request, admin_key: str = ""):
         print("SEND_TEST_EMAIL_FAILED:\n" + traceback.format_exc())
         return JSONResponse(status_code=500, content={"error": "SEND_FAILED", "message": str(e)})
 
+
 @app.get("/api/tasks/tcp-ping")
 def tcp_ping(host: str = "", port: int = 443, admin_key: str = ""):
     if admin_key != ADMIN_API_KEY:
@@ -1534,7 +1734,7 @@ def tcp_ping(host: str = "", port: int = 443, admin_key: str = ""):
 
 
 # =============================================================================
-# Stripe: checkout + success + claim + webhook
+# Stripe
 # =============================================================================
 
 @app.post("/api/stripe/create-checkout")
@@ -1562,6 +1762,7 @@ async def api_stripe_create_checkout(req: Request):
         return {"url": session.url}
     except Exception as ex:
         return JSONResponse(status_code=400, content={"error": "STRIPE_CREATE_CHECKOUT_FAILED", "message": str(ex)})
+
 
 SUCCESS_HTML = """<!doctype html>
 <html lang="no">
@@ -1614,10 +1815,12 @@ SUCCESS_HTML = """<!doctype html>
 </html>
 """
 
+
 @app.get("/success", response_class=HTMLResponse)
 def success_page(session_id: str = ""):
     html = SUCCESS_HTML.replace("__SESSION_ID__", session_id or "")
     return HTMLResponse(html)
+
 
 @app.get("/api/stripe/claim-key")
 def api_stripe_claim_key(session_id: str = ""):
@@ -1654,6 +1857,7 @@ def api_stripe_claim_key(session_id: str = ""):
         return {"api_key": row["api_key"], "email": email}
     except Exception as ex:
         return JSONResponse(status_code=400, content={"error": "STRIPE_CLAIM_FAILED", "message": str(ex)})
+
 
 @app.post("/api/stripe/webhook")
 async def stripe_webhook(request: Request):
@@ -1729,7 +1933,7 @@ async def stripe_webhook(request: Request):
 
 
 # =============================================================================
-# SEO: robots + sitemap + feed + OG image
+# SEO: robots, sitemap, feed, og image
 # =============================================================================
 
 @app.get("/robots.txt", response_class=PlainTextResponse)
@@ -1744,6 +1948,7 @@ def robots_txt(request: Request):
         f"Feed: {base}/feed.xml\n"
     )
     return PlainTextResponse(txt)
+
 
 @app.get("/sitemap.xml")
 def sitemap_xml(request: Request):
@@ -1781,6 +1986,7 @@ def sitemap_xml(request: Request):
         + "</urlset>"
     )
     return Response(content=xml, media_type="application/xml")
+
 
 @app.get("/feed.xml")
 def feed_xml(request: Request):
@@ -1832,6 +2038,7 @@ def feed_xml(request: Request):
     )
     return Response(content=channel, media_type="application/rss+xml")
 
+
 @app.get("/og.svg")
 def og_svg(request: Request):
     base = get_base_url(request)
@@ -1855,7 +2062,7 @@ def og_svg(request: Request):
 
 
 # =============================================================================
-# Pages: templates
+# Templates
 # =============================================================================
 
 def footer_links() -> str:
@@ -1873,6 +2080,7 @@ def footer_links() -> str:
       <div style="margin-top:8px">© Gullbrief. Ikke investeringsråd.</div>
     </footer>
     """
+
 
 INDEX_BODY_TEMPLATE = """
 <div class="wrap">
@@ -1973,6 +2181,7 @@ INDEX_BODY_TEMPLATE = """
 </script>
 """
 
+
 PREMIUM_BODY_TEMPLATE = """
 <div class="wrap">
   <header>
@@ -2047,6 +2256,7 @@ PREMIUM_BODY_TEMPLATE = """
   $("btnPay").addEventListener("click", startCheckout);
 </script>
 """
+
 
 SEO_LANDING_TEMPLATE = """
 <div class="wrap">
@@ -2130,7 +2340,9 @@ SEO_LANDING_TEMPLATE = """
 </script>
 """
 
-ARCHIVE_BODY_INNER = """<div class="wrap">
+
+ARCHIVE_BODY_INNER = """
+<div class="wrap">
   <header>
     <div class="brand">__APP_NAME__ Arkiv</div>
     <div class="nav">
@@ -2338,6 +2550,7 @@ ARCHIVE_BODY_INNER = """<div class="wrap">
 </script>
 """
 
+
 def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, intro: str, mode: str) -> HTMLResponse:
     body = _replace_many(
         SEO_LANDING_TEMPLATE,
@@ -2351,13 +2564,15 @@ def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, int
     )
     return HTMLResponse(html_shell(request, title=title, description=desc, path=path, body_html=body))
 
+
 # =============================================================================
-# Pages routes
+# Pages
 # =============================================================================
 
 @app.get("/analysis")
 def analysis_redirect():
     return RedirectResponse(url="/", status_code=302)
+
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
@@ -2373,6 +2588,7 @@ def index(request: Request) -> HTMLResponse:
     )
     return HTMLResponse(html_shell(request, title=title, description=desc, path="/", body_html=body))
 
+
 @app.get("/premium", response_class=HTMLResponse)
 def premium_page(request: Request) -> HTMLResponse:
     title = "Gullbrief Premium – gullpris analyse, signalhistorikk og arkiv"
@@ -2385,6 +2601,7 @@ def premium_page(request: Request) -> HTMLResponse:
         },
     )
     return HTMLResponse(html_shell(request, title=title, description=desc, path="/premium", body_html=body))
+
 
 @app.get("/archive", response_class=HTMLResponse)
 def archive_page(request: Request) -> HTMLResponse:
@@ -2426,6 +2643,7 @@ def archive_page(request: Request) -> HTMLResponse:
 
     body = archive_map_html + body
     return HTMLResponse(html_shell(request, title=title, description=desc, path="/archive", body_html=body))
+
 
 @app.get("/archive/{day}", response_class=HTMLResponse)
 def archive_day_page(request: Request, day: str) -> HTMLResponse:
@@ -2519,6 +2737,7 @@ def archive_day_page(request: Request, day: str) -> HTMLResponse:
         html_shell(request, title=title, description=desc, path=f"/archive/{day}", body_html=body, article_date=day)
     )
 
+
 @app.get("/gullpris-prognose", response_class=HTMLResponse)
 def page_gullpris_prognose(request: Request) -> HTMLResponse:
     return seo_landing(
@@ -2530,6 +2749,7 @@ def page_gullpris_prognose(request: Request) -> HTMLResponse:
         intro="Fremoverlent scenario for de neste 24–72 timene (base/bull/bear).",
         mode="forecast",
     )
+
 
 @app.get("/gullpris-analyse", response_class=HTMLResponse)
 def page_gullpris_analyse(request: Request) -> HTMLResponse:
@@ -2543,6 +2763,7 @@ def page_gullpris_analyse(request: Request) -> HTMLResponse:
         mode="analysis",
     )
 
+
 @app.get("/xauusd", response_class=HTMLResponse)
 def page_xauusd(request: Request) -> HTMLResponse:
     return seo_landing(
@@ -2555,6 +2776,7 @@ def page_xauusd(request: Request) -> HTMLResponse:
         mode="xauusd",
     )
 
+
 @app.get("/gullpris-signal", response_class=HTMLResponse)
 def page_gullpris_signal(request: Request) -> HTMLResponse:
     return seo_landing(
@@ -2566,6 +2788,7 @@ def page_gullpris_signal(request: Request) -> HTMLResponse:
         intro="Se dagens signal og hvorfor det er satt. Premium viser historikk, 7d/30d og treffsikkerhet (siste 30).",
         mode="analysis",
     )
+
 
 @app.get("/gullpris", response_class=HTMLResponse)
 def page_gullpris(request: Request) -> HTMLResponse:
