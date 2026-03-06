@@ -1,6 +1,8 @@
 ﻿from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -14,7 +16,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 import stripe  # type: ignore
@@ -25,12 +27,12 @@ from fastapi.staticfiles import StaticFiles
 
 
 # =============================================================================
-# Gullbrief main.py – v3.7
+# Gullbrief main.py – v3.8
+# - Direkte X/Twitter-posting med OAuth 1.0a
 # - Gull/XAUUSD/makro-filter for nyheter
 # - Engelske SEO-signaler i norske sider
 # - 5 gratis nyheter / flere i premium
 # - Premium / archive / Stripe / feed / sitemap / news-sitemap beholdt
-# - Twitter/X-klargjøring med daglig post-generator
 # =============================================================================
 
 
@@ -86,8 +88,6 @@ FREE_HEADLINES_LIMIT = int(os.getenv("FREE_HEADLINES_LIMIT", "5"))
 FULL_HEADLINES_LIMIT = int(os.getenv("FULL_HEADLINES_LIMIT", "15"))
 
 SOCIAL_DAILY_ENABLED = os.getenv("SOCIAL_DAILY_ENABLED", "false").strip().lower() == "true"
-SOCIAL_POST_URL = os.getenv("SOCIAL_POST_URL", "").strip()
-SOCIAL_POST_TOKEN = os.getenv("SOCIAL_POST_TOKEN", "").strip()
 
 PRIMARY_KEYWORDS = [
     "gold",
@@ -154,7 +154,7 @@ CONTEXT_WORDS = [
 # App + CORS + Static
 # =============================================================================
 
-app = FastAPI(title=f"{APP_NAME} Backend", version="3.7", docs_url=None, redoc_url=None)
+app = FastAPI(title=f"{APP_NAME} Backend", version="3.8", docs_url=None, redoc_url=None)
 
 origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
@@ -215,7 +215,7 @@ def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: i
 
 def http_get_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> str:
     h = headers or {}
-    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/3.7)")
+    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/3.8)")
     h.setdefault("Accept", "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1")
     r = requests.get(url, headers=h, timeout=timeout, allow_redirects=True)
     r.raise_for_status()
@@ -281,6 +281,108 @@ def _clip_text(s: str, n: int) -> str:
     if len(s) <= n:
         return s
     return s[: max(0, n - 1)].rstrip() + "…"
+
+
+# =============================================================================
+# X / Twitter helpers
+# =============================================================================
+
+def x_configured() -> bool:
+    return bool(
+        os.getenv("X_API_KEY", "").strip()
+        and os.getenv("X_API_SECRET", "").strip()
+        and os.getenv("X_ACCESS_TOKEN", "").strip()
+        and os.getenv("X_ACCESS_SECRET", "").strip()
+    )
+
+
+def _oauth1_header(
+    *,
+    method: str,
+    url: str,
+    consumer_key: str,
+    consumer_secret: str,
+    token: str,
+    token_secret: str,
+) -> str:
+    nonce = secrets.token_hex(16)
+    timestamp = str(int(time.time()))
+
+    oauth_params = {
+        "oauth_consumer_key": consumer_key,
+        "oauth_nonce": nonce,
+        "oauth_signature_method": "HMAC-SHA1",
+        "oauth_timestamp": timestamp,
+        "oauth_token": token,
+        "oauth_version": "1.0",
+    }
+
+    def enc(v: str) -> str:
+        return quote(str(v), safe="~-._")
+
+    param_string = "&".join(f"{enc(k)}={enc(v)}" for k, v in sorted(oauth_params.items()))
+    base_string = "&".join([
+        method.upper(),
+        enc(url),
+        enc(param_string),
+    ])
+
+    signing_key = f"{enc(consumer_secret)}&{enc(token_secret)}"
+    digest = hmac.new(signing_key.encode("utf-8"), base_string.encode("utf-8"), hashlib.sha1).digest()
+    signature = base64.b64encode(digest).decode("utf-8")
+
+    oauth_params["oauth_signature"] = signature
+
+    header = "OAuth " + ", ".join(
+        f'{enc(k)}="{enc(v)}"' for k, v in sorted(oauth_params.items())
+    )
+    return header
+
+
+def send_social_post(text: str) -> Dict[str, Any]:
+    consumer_key = os.getenv("X_API_KEY", "").strip()
+    consumer_secret = os.getenv("X_API_SECRET", "").strip()
+    access_token = os.getenv("X_ACCESS_TOKEN", "").strip()
+    access_secret = os.getenv("X_ACCESS_SECRET", "").strip()
+
+    if not (consumer_key and consumer_secret and access_token and access_secret):
+        return {"ok": False, "message": "X_NOT_CONFIGURED"}
+
+    url = "https://api.x.com/2/tweets"
+
+    try:
+        auth_header = _oauth1_header(
+            method="POST",
+            url=url,
+            consumer_key=consumer_key,
+            consumer_secret=consumer_secret,
+            token=access_token,
+            token_secret=access_secret,
+        )
+
+        r = requests.post(
+            url,
+            headers={
+                "Authorization": auth_header,
+                "Content-Type": "application/json",
+            },
+            json={"text": text},
+            timeout=20,
+        )
+
+        body_preview = r.text[:1000]
+
+        if r.status_code >= 400:
+            return {"ok": False, "status_code": r.status_code, "body": body_preview}
+
+        try:
+            payload = r.json()
+        except Exception:
+            payload = {"raw": body_preview}
+
+        return {"ok": True, "status_code": r.status_code, "body": payload}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
 
 
 # =============================================================================
@@ -474,7 +576,7 @@ class YahooPrice:
 
 
 def fetch_yahoo_chart(symbol: str, range_: str, interval: str) -> Dict[str, Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.7)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.8)"}
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
     return http_get_json(url, headers=headers)
 
@@ -674,7 +776,7 @@ def fetch_headlines(limit: int = FULL_HEADLINES_LIMIT) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
 
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.7)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.8)"}
     all_items: List[Dict[str, str]] = []
 
     for feed_url in RSS_FEEDS:
@@ -940,7 +1042,7 @@ def build_brief() -> Dict[str, Any]:
 
     return {
         "updated_at": yp.ts,
-        "version": "3.7",
+        "version": "3.8",
         "symbol": yp.symbol,
         "currency": yp.currency,
         "price_usd": yp.last,
@@ -987,7 +1089,7 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
 
     return {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.7"),
+        "version": data.get("version", "3.8"),
         "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
         "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
         "macro": {"mode": mode, "summary_short": summary},
@@ -1067,7 +1169,7 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
 
     rec = {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.7"),
+        "version": data.get("version", "3.8"),
         "symbol": data.get("symbol"),
         "price_usd": data.get("price_usd"),
         "change_pct": data.get("change_pct"),
@@ -1250,7 +1352,7 @@ def send_email(to_email: str, subject: str, body: str) -> None:
 
 
 # =============================================================================
-# Social / Twitter/X
+# Social / X
 # =============================================================================
 
 def build_daily_social_post(data: Dict[str, Any], request: Optional[Request] = None) -> Dict[str, Any]:
@@ -1287,27 +1389,8 @@ def build_daily_social_post(data: Dict[str, Any], request: Optional[Request] = N
         "text": post,
         "url": link,
         "enabled": SOCIAL_DAILY_ENABLED,
-        "configured": bool(SOCIAL_POST_URL and SOCIAL_POST_TOKEN),
+        "configured": x_configured(),
     }
-
-
-def send_social_post(text: str) -> Dict[str, Any]:
-    if not SOCIAL_POST_URL or not SOCIAL_POST_TOKEN:
-        return {"ok": False, "message": "SOCIAL_NOT_CONFIGURED"}
-
-    try:
-        r = requests.post(
-            SOCIAL_POST_URL,
-            headers={
-                "Authorization": f"Bearer {SOCIAL_POST_TOKEN}",
-                "Content-Type": "application/json",
-            },
-            json={"text": text},
-            timeout=20,
-        )
-        return {"ok": r.status_code < 400, "status_code": r.status_code, "body": r.text[:500]}
-    except Exception as e:
-        return {"ok": False, "message": str(e)}
 
 
 # =============================================================================
@@ -2542,13 +2625,14 @@ def api_social_daily_post(request: Request, x_api_key: Optional[str] = Header(de
     try:
         data = get_cached_brief(force_refresh=False)
         post = build_daily_social_post(data, request)
+
         result = {
             "enabled": SOCIAL_DAILY_ENABLED,
-            "configured": bool(SOCIAL_POST_URL and SOCIAL_POST_TOKEN),
+            "configured": x_configured(),
             "text": post["text"],
         }
 
-        if SOCIAL_DAILY_ENABLED and SOCIAL_POST_URL and SOCIAL_POST_TOKEN:
+        if SOCIAL_DAILY_ENABLED and x_configured():
             send_result = send_social_post(post["text"])
             result["send_result"] = send_result
         else:
@@ -2675,8 +2759,8 @@ def health():
             "stripe_webhook_secret_set": bool(stripe_env()["webhook_secret"]),
             "smtp_enabled": brevo_configured(),
             "social_daily_enabled": SOCIAL_DAILY_ENABLED,
-            "social_configured": bool(SOCIAL_POST_URL and SOCIAL_POST_TOKEN),
-            "version": "3.7",
+            "social_configured": x_configured(),
+            "version": "3.8",
         }
     )
 
