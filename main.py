@@ -27,7 +27,8 @@ from fastapi.staticfiles import StaticFiles
 
 
 # =============================================================================
-# Gullbrief main.py – v3.8
+# Gullbrief main.py – v3.9
+# - Snapshot-basert public rendering for raskere lastetid
 # - Direkte X/Twitter-posting med OAuth 1.0a
 # - Gull/XAUUSD/makro-filter for nyheter
 # - Engelske SEO-signaler i norske sider
@@ -60,6 +61,7 @@ RSS_FEEDS = [u.strip() for u in RSS_FEEDS_ENV.split(",") if u.strip()]
 
 HISTORY_PATH = os.getenv("HISTORY_PATH", "data/history.jsonl").strip()
 DB_PATH = os.getenv("DB_PATH", "data/app.db").strip()
+PUBLIC_SNAPSHOT_PATH = os.getenv("PUBLIC_SNAPSHOT_PATH", "data/public_snapshot.json").strip()
 
 ADMIN_API_KEY = os.getenv("PREMIUM_API_KEY", "gullbrief-dev").strip()
 BASE_URL = os.getenv("BASE_URL", "").strip().rstrip("/")
@@ -154,7 +156,7 @@ CONTEXT_WORDS = [
 # App + CORS + Static
 # =============================================================================
 
-app = FastAPI(title=f"{APP_NAME} Backend", version="3.8", docs_url=None, redoc_url=None)
+app = FastAPI(title=f"{APP_NAME} Backend", version="3.9", docs_url=None, redoc_url=None)
 
 origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
@@ -215,7 +217,7 @@ def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: i
 
 def http_get_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> str:
     h = headers or {}
-    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/3.8)")
+    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/3.9)")
     h.setdefault("Accept", "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1")
     r = requests.get(url, headers=h, timeout=timeout, allow_redirects=True)
     r.raise_for_status()
@@ -281,6 +283,50 @@ def _clip_text(s: str, n: int) -> str:
     if len(s) <= n:
         return s
     return s[: max(0, n - 1)].rstrip() + "…"
+
+
+def _ensure_parent_file(path_str: str) -> pathlib.Path:
+    p = pathlib.Path(path_str)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def read_json_file(path_str: str) -> Optional[Dict[str, Any]]:
+    p = _ensure_parent_file(path_str)
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def write_json_file_atomic(path_str: str, data: Dict[str, Any]) -> None:
+    p = _ensure_parent_file(path_str)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(p)
+
+
+def read_public_snapshot() -> Optional[Dict[str, Any]]:
+    data = read_json_file(PUBLIC_SNAPSHOT_PATH)
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def write_public_snapshot(data: Dict[str, Any]) -> None:
+    payload = dict(data)
+    payload["snapshot_saved_at"] = iso_now()
+    write_json_file_atomic(PUBLIC_SNAPSHOT_PATH, payload)
+
+
+def json_for_html(data: Dict[str, Any]) -> str:
+    return (
+        json.dumps(data, ensure_ascii=False)
+        .replace("</", "<\\/")
+        .replace("<!--", "<\\!--")
+    )
 
 
 # =============================================================================
@@ -490,6 +536,10 @@ def init_db() -> None:
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
+    snap = read_public_snapshot()
+    if snap:
+        CACHE.data = snap
+        CACHE.ts = time.time()
 
 
 def is_valid_key(k: Optional[str]) -> bool:
@@ -576,7 +626,7 @@ class YahooPrice:
 
 
 def fetch_yahoo_chart(symbol: str, range_: str, interval: str) -> Dict[str, Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.8)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.9)"}
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
     return http_get_json(url, headers=headers)
 
@@ -776,7 +826,7 @@ def fetch_headlines(limit: int = FULL_HEADLINES_LIMIT) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
 
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.8)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.9)"}
     all_items: List[Dict[str, str]] = []
 
     for feed_url in RSS_FEEDS:
@@ -1042,7 +1092,7 @@ def build_brief() -> Dict[str, Any]:
 
     return {
         "updated_at": yp.ts,
-        "version": "3.8",
+        "version": "3.9",
         "symbol": yp.symbol,
         "currency": yp.currency,
         "price_usd": yp.last,
@@ -1065,14 +1115,33 @@ def get_cached_brief(force_refresh: bool) -> Dict[str, Any]:
     now = time.time()
     if (not force_refresh) and CACHE.data and (now - CACHE.ts) < CACHE_TTL_SECONDS:
         return CACHE.data
+
     data = build_brief()
+
     try:
         store_snapshot_if_needed(data)
     except Exception:
         pass
+
+    try:
+        write_public_snapshot(data)
+    except Exception:
+        pass
+
     CACHE.data = data
     CACHE.ts = now
     return data
+
+
+def get_public_brief(force_build: bool = False) -> Dict[str, Any]:
+    if not force_build:
+        snap = read_public_snapshot()
+        if snap:
+            return snap
+        if CACHE.data:
+            return CACHE.data
+
+    return get_cached_brief(force_refresh=True)
 
 
 def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[str, Any]:
@@ -1089,7 +1158,7 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
 
     return {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.8"),
+        "version": data.get("version", "3.9"),
         "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
         "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
         "macro": {"mode": mode, "summary_short": summary},
@@ -1097,6 +1166,11 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
         "headlines_total": len(data.get("headlines") or []),
         "headlines_free_limit": FREE_HEADLINES_LIMIT,
     }
+
+
+def get_public_today_payload(mode: str = "analysis") -> Dict[str, Any]:
+    data = get_public_brief(force_build=False)
+    return map_to_public_today(data, mode)
 
 
 # =============================================================================
@@ -1169,7 +1243,7 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
 
     rec = {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.8"),
+        "version": data.get("version", "3.9"),
         "symbol": data.get("symbol"),
         "price_usd": data.get("price_usd"),
         "change_pct": data.get("change_pct"),
@@ -1714,6 +1788,7 @@ INDEX_BODY_TEMPLATE = """
   __FOOTER__
 </div>
 
+<script id="initialTodayData" type="application/json">__INITIAL_JSON__</script>
 <script>
   const MODE = "analysis";
   const $ = (id) => document.getElementById(id);
@@ -1745,21 +1820,38 @@ INDEX_BODY_TEMPLATE = """
     }
   }
 
+  function renderToday(data){
+    $("updatedAt").textContent = "Oppdatert: " + (data.updated_at || "–");
+    $("price").textContent = fmtPrice(data?.gold?.price_usd);
+    $("change").textContent = "Endring: " + fmtPct(data?.gold?.change_pct);
+    const state = data?.signal?.state || "neutral";
+    $("signalText").textContent = "Signal: " + state;
+    $("signalPill").className = "pill " + pillClass(state);
+    $("reason").textContent = data?.signal?.reason_short || "–";
+    $("macro").textContent = data?.macro?.summary_short || "–";
+    renderHeadlines(data);
+  }
+
+  function renderInitial(){
+    try{
+      const raw = $("initialTodayData")?.textContent || "{}";
+      const data = JSON.parse(raw);
+      if(data && data.gold){
+        renderToday(data);
+        $("status").textContent = "Status: Snapshot lastet";
+        return true;
+      }
+    }catch(e){}
+    return false;
+  }
+
   async function loadToday(){
     try{
-      $("status").textContent = "Status: Laster…";
+      $("status").textContent = "Status: Laster snapshot…";
       const res = await fetch("/api/public/today?mode=" + encodeURIComponent(MODE), {cache:"no-store"});
       const data = await res.json();
       if(!res.ok) throw new Error(data?.message || ("HTTP " + res.status));
-      $("updatedAt").textContent = "Oppdatert: " + (data.updated_at || "–");
-      $("price").textContent = fmtPrice(data?.gold?.price_usd);
-      $("change").textContent = "Endring: " + fmtPct(data?.gold?.change_pct);
-      const state = data?.signal?.state || "neutral";
-      $("signalText").textContent = "Signal: " + state;
-      $("signalPill").className = "pill " + pillClass(state);
-      $("reason").textContent = data?.signal?.reason_short || "–";
-      $("macro").textContent = data?.macro?.summary_short || "–";
-      renderHeadlines(data);
+      renderToday(data);
       $("status").textContent = "Status: OK";
     }catch(e){
       $("status").textContent = "Status: Feil: " + e;
@@ -1768,11 +1860,14 @@ INDEX_BODY_TEMPLATE = """
 
   $("btnReload").addEventListener("click", loadToday);
   $("btnRefresh").addEventListener("click", async () => {
+    $("status").textContent = "Status: Bygger ny snapshot…";
     await fetch("/api/brief/refresh", {cache:"no-store"}).catch(()=>{});
-    loadToday();
+    await loadToday();
   });
 
-  loadToday();
+  if(!renderInitial()){
+    loadToday();
+  }
 </script>
 """
 
@@ -1905,6 +2000,7 @@ SEO_LANDING_TEMPLATE = """
   __FOOTER__
 </div>
 
+<script id="initialTodayData" type="application/json">__INITIAL_JSON__</script>
 <script>
   const MODE = "__MODE__";
   const $ = (id) => document.getElementById(id);
@@ -1936,28 +2032,49 @@ SEO_LANDING_TEMPLATE = """
     }
   }
 
+  function renderToday(data){
+    $("updatedAt").textContent = "Oppdatert: " + (data.updated_at || "–");
+    $("price").textContent = fmtPrice(data?.gold?.price_usd);
+    $("change").textContent = "Endring: " + fmtPct(data?.gold?.change_pct);
+    const state = data?.signal?.state || "neutral";
+    $("signalText").textContent = "Signal: " + state;
+    $("signalPill").className = "pill " + pillClass(state);
+    $("reason").textContent = data?.signal?.reason_short || "–";
+    $("macro").textContent = data?.macro?.summary_short || "–";
+    renderHeadlines(data);
+  }
+
+  function renderInitial(){
+    try{
+      const raw = $("initialTodayData")?.textContent || "{}";
+      const data = JSON.parse(raw);
+      if(data && data.gold){
+        renderToday(data);
+        $("status").textContent = "Status: Snapshot lastet";
+        return true;
+      }
+    }catch(e){}
+    return false;
+  }
+
   async function loadToday(){
     try{
-      $("status").textContent = "Status: Laster…";
+      $("status").textContent = "Status: Laster snapshot…";
       const res = await fetch("/api/public/today?mode=" + encodeURIComponent(MODE), {cache:"no-store"});
       const data = await res.json();
       if(!res.ok) throw new Error(data?.message || ("HTTP " + res.status));
-      $("updatedAt").textContent = "Oppdatert: " + (data.updated_at || "–");
-      $("price").textContent = fmtPrice(data?.gold?.price_usd);
-      $("change").textContent = "Endring: " + fmtPct(data?.gold?.change_pct);
-      const state = data?.signal?.state || "neutral";
-      $("signalText").textContent = "Signal: " + state;
-      $("signalPill").className = "pill " + pillClass(state);
-      $("reason").textContent = data?.signal?.reason_short || "–";
-      $("macro").textContent = data?.macro?.summary_short || "–";
-      renderHeadlines(data);
+      renderToday(data);
       $("status").textContent = "Status: OK";
     }catch(e){
       $("status").textContent = "Status: Feil: " + e;
     }
   }
+
   $("btnReload").addEventListener("click", loadToday);
-  loadToday();
+
+  if(!renderInitial()){
+    loadToday();
+  }
 </script>
 """
 
@@ -2210,6 +2327,8 @@ SUCCESS_TEMPLATE = """
 
 
 def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, intro: str, mode: str, nav_active: str) -> HTMLResponse:
+    initial_payload = get_public_today_payload(mode)
+
     body = _replace_many(
         SEO_LANDING_TEMPLATE,
         {
@@ -2219,6 +2338,7 @@ def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, int
             "__FOOTER__": footer_links(),
             "__MODE__": _escape_html(mode),
             "__NAV_TABS__": nav_tabs(nav_active),
+            "__INITIAL_JSON__": json_for_html(initial_payload),
         },
     )
     return HTMLResponse(html_shell(request, title=title, description=desc, path=path, body_html=body))
@@ -2237,6 +2357,9 @@ def analysis_redirect():
 def index(request: Request) -> HTMLResponse:
     title = "Gullpris analyse | Gold price analysis | daglig gullbrief og markedssignal"
     desc = "Nøktern daglig analyse av gull og XAUUSD. Gold price analysis, trend, signal, forecast og makro."
+
+    initial_payload = get_public_today_payload("analysis")
+
     body = _replace_many(
         INDEX_BODY_TEMPLATE,
         {
@@ -2244,6 +2367,7 @@ def index(request: Request) -> HTMLResponse:
             "__DESC__": _escape_html(desc),
             "__FOOTER__": footer_links(),
             "__NAV_TABS__": nav_tabs("analysis"),
+            "__INITIAL_JSON__": json_for_html(initial_payload),
         },
     )
     return HTMLResponse(html_shell(request, title=title, description=desc, path="/", body_html=body))
@@ -2272,14 +2396,12 @@ def archive_page(request: Request) -> HTMLResponse:
     dates = get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)
 
     if not dates:
-        try:
-            raw = get_cached_brief(force_refresh=True)
+        snap = read_public_snapshot()
+        if snap:
             try:
-                store_snapshot_if_needed(raw)
+                store_snapshot_if_needed(snap)
             except Exception:
                 pass
-        except Exception:
-            pass
         dates = get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)
 
     links = []
@@ -2528,8 +2650,7 @@ def page_gullpris(request: Request) -> HTMLResponse:
 @app.get("/api/public/today")
 def api_public_today(mode: str = "analysis"):
     try:
-        data = get_cached_brief(force_refresh=False)
-        return JSONResponse(map_to_public_today(data, mode))
+        return JSONResponse(get_public_today_payload(mode))
     except Exception as e:
         return JSONResponse({"message": str(e)}, status_code=500)
 
@@ -2742,6 +2863,7 @@ async def api_stripe_webhook(request: Request):
 
 @app.get("/health")
 def health():
+    snapshot = read_public_snapshot()
     return JSONResponse(
         {
             "status": "ok",
@@ -2752,6 +2874,8 @@ def health():
             "rss_feeds": RSS_FEEDS,
             "history_path": HISTORY_PATH,
             "db_path": DB_PATH,
+            "public_snapshot_path": PUBLIC_SNAPSHOT_PATH,
+            "public_snapshot_exists": bool(snapshot),
             "admin_key_configured": bool(ADMIN_API_KEY),
             "stripe_enabled": stripe_ready(),
             "stripe_secret_len": len(stripe_env()["secret_key"]),
@@ -2760,7 +2884,7 @@ def health():
             "smtp_enabled": brevo_configured(),
             "social_daily_enabled": SOCIAL_DAILY_ENABLED,
             "social_configured": x_configured(),
-            "version": "3.8",
+            "version": "3.9",
         }
     )
 
@@ -2783,7 +2907,8 @@ def feed_xml(request: Request):
     rows = list(reversed(read_history(limit=max(FEED_ITEMS, 5))))
     if not rows:
         try:
-            rows = [get_cached_brief(force_refresh=False)]
+            snap = read_public_snapshot()
+            rows = [snap] if snap else []
         except Exception:
             rows = []
 
