@@ -34,11 +34,12 @@ from fastapi.staticfiles import StaticFiles
 
 
 # =============================================================================
-# Gullbrief main.py – v3.4
-# - Tydelig skille mellom Analyse / Prognose / XAUUSD
+# Gullbrief main.py – v3.5
+# - Profesjonell toppnavigasjon med ikon-tabs over innholdsboksen
+# - Skiller tydelig mellom Analyse / Prognose / XAUUSD / Signal
 # - Ett OpenAI-kall returnerer analysis / forecast / xauusd / premium
 # - Premium får mer: tekniske nivåer, scenario, "hva bryter signalet", watchlist
-# - Stabil RSS (direkte finanskilder, ingen Google redirect-rot)
+# - Stabil RSS (direkte finanskilder)
 # - Beholder Stripe / Brevo / Premium / Arkiv / SEO / Feed / Sitemap
 # =============================================================================
 
@@ -101,7 +102,7 @@ FEED_ITEMS = int(os.getenv("FEED_ITEMS", "20"))
 # App + CORS + Static
 # =============================================================================
 
-app = FastAPI(title=f"{APP_NAME} Backend", version="3.4", docs_url=None, redoc_url=None)
+app = FastAPI(title=f"{APP_NAME} Backend", version="3.5", docs_url=None, redoc_url=None)
 
 origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
@@ -116,7 +117,6 @@ app.add_middleware(
 
 try:
     from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware  # type: ignore
-
     app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 except Exception:
     pass
@@ -163,7 +163,7 @@ def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: i
 
 def http_get_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> str:
     h = headers or {}
-    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/3.4)")
+    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/3.5)")
     h.setdefault("Accept", "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1")
     r = requests.get(url, headers=h, timeout=timeout, allow_redirects=True)
     r.raise_for_status()
@@ -404,7 +404,7 @@ class YahooPrice:
 
 
 def fetch_yahoo_chart(symbol: str, range_: str, interval: str) -> Dict[str, Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.4)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.5)"}
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
     return http_get_json(url, headers=headers)
 
@@ -518,9 +518,6 @@ def compute_signal(symbol: str) -> Tuple[str, Dict[str, Any]]:
 
 
 def compute_technical_levels(symbol: str) -> Dict[str, Any]:
-    """
-    Enkle, deterministiske nivåer basert på closes.
-    """
     chart = fetch_yahoo_chart(symbol, range_="6mo", interval="1d")
     closes = extract_closes(chart)
 
@@ -594,7 +591,7 @@ def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
 
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.4)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.5)"}
     all_items: List[Dict[str, str]] = []
 
     for feed_url in RSS_FEEDS:
@@ -617,15 +614,11 @@ def fetch_headlines(limit: int = 10) -> List[Dict[str, str]]:
         lk = (it.get("link") or "").strip()
         if not lk:
             continue
-
-        # Filtrer vekk Bloomberg video-støy
         if "/news/videos/" in lk:
             continue
-
         if lk not in seen:
             seen.add(lk)
             out.append(it)
-
         if len(out) >= limit:
             break
 
@@ -647,15 +640,6 @@ def summarize_bundle_with_openai(
     trend_score: Optional[int],
     levels: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
-    """
-    Returns:
-      {
-        "analysis": "...",
-        "forecast": "...",
-        "xauusd": "...",
-        "premium": "..."
-      }
-    """
     out = {"analysis": "", "forecast": "", "xauusd": "", "premium": ""}
 
     if not OPENAI_API_KEY or not headlines:
@@ -722,7 +706,6 @@ def summarize_bundle_with_openai(
 
     try:
         from openai import OpenAI  # type: ignore
-
         client = OpenAI(api_key=OPENAI_API_KEY)
         resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
         txt = (resp.output_text or "").strip()
@@ -863,7 +846,7 @@ def build_brief() -> Dict[str, Any]:
 
     return {
         "updated_at": yp.ts,
-        "version": "3.4",
+        "version": "3.5",
         "symbol": yp.symbol,
         "currency": yp.currency,
         "price_usd": yp.last,
@@ -873,18 +856,11 @@ def build_brief() -> Dict[str, Any]:
         "rsi14": rsi14v,
         "trend_score": tscore,
         "levels": levels,
-
-        # Backwards compatible
         "macro_summary": analysis_text,
-
-        # Distinct texts
         "analysis": analysis_text,
         "forecast": forecast_text,
         "xauusd": xauusd_text,
-
-        # Premium
         "premium_insight": premium_insight,
-
         "headlines": headlines,
     }
 
@@ -917,7 +893,7 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
 
     return {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.4"),
+        "version": data.get("version", "3.5"),
         "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
         "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
         "macro": {"mode": mode, "summary_short": summary},
@@ -995,7 +971,7 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
 
     rec = {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.4"),
+        "version": data.get("version", "3.5"),
         "symbol": data.get("symbol"),
         "price_usd": data.get("price_usd"),
         "change_pct": data.get("change_pct"),
@@ -1004,13 +980,11 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
         "rsi14": data.get("rsi14"),
         "trend_score": data.get("trend_score"),
         "levels": data.get("levels", {}),
-
         "macro_summary": data.get("macro_summary", ""),
         "analysis": data.get("analysis", ""),
         "forecast": data.get("forecast", ""),
         "xauusd": data.get("xauusd", ""),
         "premium_insight": data.get("premium_insight", ""),
-
         "premium_report": rep or "",
         "headlines": data.get("headlines", []),
     }
@@ -1185,6 +1159,25 @@ def send_email(to_email: str, subject: str, body: str) -> None:
 
 
 # =============================================================================
+# Navigation / UI helpers
+# =============================================================================
+
+def nav_tabs(active: str) -> str:
+    tabs = [
+        ("/gullpris-analyse", "analysis", "📈 Analyse"),
+        ("/gullpris-prognose", "forecast", "🔮 Prognose"),
+        ("/xauusd", "xauusd", "💵 XAUUSD"),
+        ("/gullpris-signal", "signal", "🚦 Signal"),
+        ("/premium", "premium", "⭐ Premium"),
+    ]
+    links = []
+    for href, key, label in tabs:
+        cls = "tab active" if key == active else "tab"
+        links.append(f'<a class="{cls}" href="{href}">{_escape_html(label)}</a>')
+    return '<div class="page-tabs">' + "".join(links) + "</div>"
+
+
+# =============================================================================
 # SEO helpers
 # =============================================================================
 
@@ -1222,42 +1215,131 @@ def jsonld_article(base: str, title: str, description: str, url_path: str, date_
 
 COMMON_STYLE = """
 <style>
-  :root{--bg:#0f1720;--card:#16212c;--text:#e5e7eb;--muted:#9aa3af;--gold:#d4af37;--ok:#34d399;--err:#fb7185;--max:1060px;--r:16px;}
+  :root{
+    --bg:#0f1720;
+    --card:#16212c;
+    --card-2:#1a2633;
+    --text:#e5e7eb;
+    --muted:#9aa3af;
+    --gold:#d4af37;
+    --gold-soft:#e1c15b;
+    --ok:#34d399;
+    --err:#fb7185;
+    --max:1120px;
+    --r:18px;
+    --line:rgba(255,255,255,.07);
+  }
   *{box-sizing:border-box}
-  body{margin:0;background:radial-gradient(1200px 800px at 20% 10%,#142234 0%,var(--bg) 55%) no-repeat;color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;line-height:1.45;}
-  a{color:var(--text);text-decoration:none} a:hover{text-decoration:underline}
-  .wrap{max-width:var(--max);margin:0 auto;padding:28px 18px 64px}
+  body{
+    margin:0;
+    background:
+      radial-gradient(1200px 800px at 20% 10%,#142234 0%,var(--bg) 55%) no-repeat,
+      linear-gradient(180deg,#0d1520 0%,#0f1720 100%);
+    color:var(--text);
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;
+    line-height:1.5;
+  }
+  a{color:var(--text);text-decoration:none}
+  a:hover{text-decoration:none}
+  .wrap{max-width:var(--max);margin:0 auto;padding:28px 18px 72px}
   header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:8px 0 18px}
-  .brand{font-weight:850;letter-spacing:.2px}
-  .nav{display:flex;gap:12px;align-items:center;color:var(--muted);font-size:14px;flex-wrap:wrap}
+  .brand{font-weight:850;letter-spacing:.2px;font-size:15px}
+  .nav{display:flex;gap:14px;align-items:center;color:var(--muted);font-size:14px;flex-wrap:wrap}
   .nav a{color:var(--muted)}
-  .cta{background:var(--gold);color:#0b0f14;padding:10px 14px;border-radius:999px;font-weight:800}
-  .hero{padding:20px 0 6px}
+  .cta{background:var(--gold);color:#0b0f14;padding:10px 14px;border-radius:999px;font-weight:850}
+  .hero{padding:18px 0 4px}
   .hero h1{margin:10px 0 8px;font-size:40px;font-family:ui-serif,Georgia,Times;letter-spacing:-.3px}
   .hero p{margin:0;color:var(--muted);font-size:18px;max-width:78ch}
-  .grid{display:grid;grid-template-columns:1fr;gap:14px;margin-top:16px}
-  @media (min-width:940px){.grid{grid-template-columns:1.15fr .85fr}}
-  .card{background:rgba(22,33,44,.92);border:1px solid rgba(255,255,255,.06);border-radius:var(--r);padding:18px}
+  .page-tabs{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+    margin:20px 0 18px;
+    padding:10px 12px;
+    border:1px solid var(--line);
+    background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.025));
+    border-radius:18px;
+    box-shadow:0 8px 24px rgba(0,0,0,.14);
+    backdrop-filter: blur(4px);
+  }
+  .tab{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    padding:11px 15px;
+    border-radius:999px;
+    color:#e8e1c6;
+    font-weight:800;
+    font-size:15px;
+    letter-spacing:.1px;
+    transition:all .15s ease;
+  }
+  .tab:hover{
+    background:rgba(255,255,255,.06);
+    color:#fff0bf;
+  }
+  .tab.active{
+    background:var(--gold);
+    color:#10141b;
+    box-shadow:0 6px 18px rgba(212,175,55,.22);
+  }
+  .grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:10px}
+  @media (min-width:980px){.grid{grid-template-columns:1.15fr .85fr}}
+  .card{
+    background:linear-gradient(180deg,rgba(22,33,44,.95),rgba(20,30,40,.95));
+    border:1px solid var(--line);
+    border-radius:var(--r);
+    padding:18px;
+    box-shadow:0 10px 28px rgba(0,0,0,.18);
+  }
   .title{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
-  .title h2{margin:0;font-size:16px;color:var(--muted);font-weight:750}
+  .title h2{margin:0;font-size:16px;color:var(--muted);font-weight:780}
   .big{font-size:34px;font-weight:900;margin:8px 0 0}
   .sub{color:var(--muted);margin-top:2px}
-  .pill{display:inline-flex;align-items:center;gap:8px;padding:7px 10px;border-radius:999px;background:rgba(255,255,255,.06);font-weight:850;margin-top:10px}
+  .pill{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    padding:7px 10px;
+    border-radius:999px;
+    background:rgba(255,255,255,.06);
+    font-weight:850;
+    margin-top:10px
+  }
   .pill .dot{width:9px;height:9px;border-radius:99px;background:var(--muted)}
-  .pill.bullish .dot{background:var(--ok)} .pill.bearish .dot{background:var(--err)} .pill.neutral .dot{background:var(--gold)}
+  .pill.bullish .dot{background:var(--ok)}
+  .pill.bearish .dot{background:var(--err)}
+  .pill.neutral .dot{background:var(--gold)}
   .muted{color:var(--muted)}
-  ul{margin:10px 0 0;padding:0 0 0 16px} li{margin:10px 0}
-  .btnrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
-  button{border:0;border-radius:12px;padding:10px 12px;font-weight:850;cursor:pointer;background:rgba(255,255,255,.08);color:var(--text)}
+  ul{margin:10px 0 0;padding:0 0 0 16px}
+  li{margin:10px 0}
+  .btnrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+  button{
+    border:0;
+    border-radius:12px;
+    padding:10px 12px;
+    font-weight:850;
+    cursor:pointer;
+    background:rgba(255,255,255,.08);
+    color:var(--text)
+  }
   button:hover{background:rgba(255,255,255,.12)}
-  input{width:min(520px,100%);padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.06);color:var(--text);outline:none}
+  input{
+    width:min(520px,100%);
+    padding:10px 12px;
+    border-radius:12px;
+    border:1px solid rgba(255,255,255,.10);
+    background:rgba(255,255,255,.06);
+    color:var(--text);
+    outline:none
+  }
   table{width:100%;border-collapse:collapse;margin-top:14px}
   th,td{padding:10px 8px;border-bottom:1px solid rgba(255,255,255,.06);text-align:left;vertical-align:top}
   th{color:var(--muted);font-weight:850;font-size:13px}
   td{font-size:14px}
   .small{font-size:12px;color:var(--muted)}
   code{background:rgba(255,255,255,.07);padding:2px 6px;border-radius:8px}
-  footer{margin-top:18px;color:var(--muted);font-size:13px}
+  footer{margin-top:22px;color:var(--muted);font-size:13px}
   .links{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px}
   .links a{color:var(--muted)}
 </style>
@@ -1323,745 +1405,6 @@ def html_shell(
 
 
 # =============================================================================
-# Core APIs
-# =============================================================================
-
-@app.get("/health")
-def health() -> Dict[str, Any]:
-    e = stripe_env()
-    return {
-        "status": "ok",
-        "ts": iso_now(),
-        "yahoo_symbol": YAHOO_SYMBOL,
-        "cache_ttl_seconds": CACHE_TTL_SECONDS,
-        "openai_enabled": bool(OPENAI_API_KEY),
-        "rss_feeds": RSS_FEEDS,
-        "history_path": HISTORY_PATH,
-        "db_path": DB_PATH,
-        "admin_key_configured": ADMIN_API_KEY != "gullbrief-dev",
-        "stripe_enabled": stripe_ready(),
-        "stripe_secret_len": len(e["secret_key"]),
-        "stripe_price_id_prefix": (e["price_id"][:10] + "...") if e["price_id"] else "",
-        "stripe_webhook_secret_set": bool(e["webhook_secret"]),
-        "brevo_enabled": brevo_configured(),
-        "version": "3.4",
-    }
-
-
-@app.get("/api/debug/stripe")
-def debug_stripe(request: Request) -> Dict[str, Any]:
-    e = stripe_env()
-    base = get_base_url(request)
-    success = e["success_url"] or f"{base}/success"
-    cancel = e["cancel_url"] or f"{base}/premium"
-    return {
-        "stripe_ready": stripe_ready(),
-        "secret_len": len(e["secret_key"]),
-        "price_id": e["price_id"],
-        "success_url": success,
-        "cancel_url": cancel,
-        "webhook_secret_set": bool(e["webhook_secret"]),
-    }
-
-
-@app.get("/api/debug/rss2")
-def api_debug_rss2() -> Any:
-    out = []
-    for feed_url in RSS_FEEDS:
-        try:
-            xml_text = http_get_text(feed_url, timeout=20)
-            items = parse_rss(xml_text, fallback_source=domain_of(feed_url) or "RSS")
-            out.append({"url": feed_url, "ok": True, "bytes": len(xml_text.encode("utf-8", errors="ignore")), "items": len(items)})
-        except Exception as e:
-            out.append({"url": feed_url, "ok": False, "error": str(e)})
-    return out
-
-
-@app.get("/api/brief")
-def api_brief(force_refresh: bool = False):
-    try:
-        return get_cached_brief(force_refresh=force_refresh)
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": "BRIEF_FAILED", "message": str(e)})
-
-
-@app.get("/api/brief/refresh")
-def api_brief_refresh():
-    try:
-        return get_cached_brief(force_refresh=True)
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": "BRIEF_REFRESH_FAILED", "message": str(e)})
-
-
-@app.get("/api/public/today")
-def api_public_today(mode: str = "analysis"):
-    try:
-        raw = get_cached_brief(force_refresh=False)
-        return map_to_public_today(raw, mode=mode)
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": "PUBLIC_TODAY_FAILED", "message": str(e)})
-
-
-@app.get("/api/public/teaser-history")
-def api_teaser_history():
-    rows = read_history(limit=60)
-    rows = add_forward_returns(rows, days_list=(7, 30))
-    items = rows[-3:]
-    out = []
-    for r in reversed(items):
-        out.append({
-            "updated_at": r.get("updated_at"),
-            "symbol": r.get("symbol"),
-            "price_usd": r.get("price_usd"),
-            "signal": r.get("signal"),
-            "macro_summary": (r.get("macro_summary") or "")[:140],
-            "return_7d_pct": r.get("return_7d_pct"),
-            "return_30d_pct": r.get("return_30d_pct"),
-        })
-    return {"count": len(out), "items": out}
-
-
-@app.get("/api/history")
-def api_history(limit: int = 200, x_api_key: str | None = Header(default=None)):
-    if not is_valid_key(x_api_key):
-        return JSONResponse(status_code=401, content={"error": "PREMIUM_REQUIRED", "message": "Historikk er kun for medlemmer."})
-    rows = read_history(limit=limit)
-    rows = add_forward_returns(rows, days_list=(7, 30))
-    newest_first = list(reversed(rows))
-    stats = signal_stats_last30(newest_first)
-    return {"count": len(rows), "items": rows, "stats": stats}
-
-
-@app.get("/api/premium/report/today")
-def api_premium_report_today(x_api_key: str | None = Header(default=None)):
-    if not is_valid_key(x_api_key):
-        return JSONResponse(status_code=401, content={"error": "PREMIUM_REQUIRED", "message": "Premium kreves."})
-
-    last = _read_last_snapshot() or {}
-    rep = (last.get("premium_report") or "").strip()
-    if rep:
-        return {"updated_at": last.get("updated_at") or iso_now(), "report": rep}
-
-    raw = get_cached_brief(force_refresh=False)
-    rep2 = premium_report_ai_from_bundle(
-        bundle={
-            "premium": (raw.get("premium_insight") or ""),
-            "analysis": (raw.get("analysis") or raw.get("macro_summary") or ""),
-            "forecast": (raw.get("forecast") or ""),
-            "xauusd": (raw.get("xauusd") or ""),
-        },
-        signal_state=str(raw.get("signal") or "neutral"),
-        signal_reason=str(raw.get("signal_reason") or ""),
-        price_usd=safe_float(raw.get("price_usd")),
-        change_pct=safe_float(raw.get("change_pct")),
-        rsi14=safe_float(raw.get("rsi14")),
-        trend_score=raw.get("trend_score") if isinstance(raw.get("trend_score"), int) else None,
-        headlines=raw.get("headlines", []),
-        levels=raw.get("levels") if isinstance(raw.get("levels"), dict) else {},
-    )
-    return {"updated_at": iso_now(), "report": rep2 or ""}
-
-
-@app.get("/api/premium/brief")
-def api_premium_brief(x_api_key: str | None = Header(default=None), force_refresh: bool = False):
-    if not is_valid_key(x_api_key):
-        return JSONResponse(status_code=401, content={"error": "PREMIUM_REQUIRED", "message": "Premium kreves."})
-    try:
-        raw = get_cached_brief(force_refresh=force_refresh)
-        return {
-            "updated_at": raw.get("updated_at") or iso_now(),
-            "analysis": raw.get("analysis") or raw.get("macro_summary") or "",
-            "forecast": raw.get("forecast") or "",
-            "xauusd": raw.get("xauusd") or "",
-            "premium_insight": raw.get("premium_insight") or "",
-            "levels": raw.get("levels") or {},
-            "signal": raw.get("signal") or "neutral",
-            "signal_reason": raw.get("signal_reason") or "",
-            "price_usd": raw.get("price_usd"),
-            "change_pct": raw.get("change_pct"),
-            "rsi14": raw.get("rsi14"),
-            "trend_score": raw.get("trend_score"),
-            "headlines": raw.get("headlines") or [],
-        }
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": "PREMIUM_BRIEF_FAILED", "message": str(e)})
-
-
-@app.post("/api/premium/subscribe-email")
-async def api_subscribe_email(req: Request, x_api_key: str | None = Header(default=None)):
-    if not is_valid_key(x_api_key):
-        return JSONResponse(status_code=401, content={"error": "PREMIUM_REQUIRED", "message": "Premium kreves."})
-
-    body = await req.json()
-    email = (body.get("email") or "").strip().lower()
-    if "@" not in email:
-        return JSONResponse(status_code=400, content={"error": "BAD_EMAIL", "message": "Ugyldig e-post."})
-
-    conn = _db()
-    conn.execute(
-        "INSERT OR IGNORE INTO email_subscriptions(api_key,email,created_at,last_notified_signal,last_daily_sent_date) VALUES(?,?,?,?,?)",
-        (x_api_key, email, iso_now(), None, None),
-    )
-    conn.commit()
-    conn.close()
-    return {"ok": True, "email": email}
-
-
-# =============================================================================
-# Admin tasks
-# =============================================================================
-
-@app.get("/api/tasks/check-signal")
-def api_check_signal(admin_key: str = ""):
-    if admin_key != ADMIN_API_KEY:
-        return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED", "message": "admin_key feil."})
-
-    try:
-        get_cached_brief(force_refresh=True)
-    except Exception:
-        pass
-
-    sig = latest_signal().lower()
-    if not sig:
-        return {"ok": True, "sent": 0, "note": "No history yet."}
-
-    if not brevo_configured():
-        return {"ok": False, "sent": 0, "error": "BREVO_NOT_CONFIGURED"}
-
-    conn = _db()
-    rows = conn.execute("SELECT id, api_key, email, last_notified_signal FROM email_subscriptions").fetchall()
-    sent = 0
-
-    for row in rows:
-        if not is_valid_key(row["api_key"]):
-            continue
-
-        last_sig = (row["last_notified_signal"] or "").lower()
-        if last_sig == sig:
-            continue
-
-        to_email = row["email"]
-        subject = f"{APP_NAME}: signal endret til {sig.upper()}"
-        body = (
-            "Signalet i Gullbrief har endret seg.\n\n"
-            f"Nytt signal: {sig.upper()}\n"
-            "Se arkiv: /archive\n\n"
-            "(Dette er et automatisk varsel.)\n"
-        )
-        try:
-            send_email(to_email, subject, body)
-            conn.execute("UPDATE email_subscriptions SET last_notified_signal=? WHERE id=?", (sig, row["id"]))
-            conn.commit()
-            sent += 1
-        except Exception:
-            continue
-
-    conn.close()
-    return {"ok": True, "sent": sent, "signal": sig}
-
-
-@app.get("/api/tasks/send-daily-macro")
-def api_send_daily_macro(admin_key: str = ""):
-    if admin_key != ADMIN_API_KEY:
-        return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED", "message": "admin_key feil."})
-
-    if not brevo_configured():
-        return JSONResponse(status_code=500, content={"error": "BREVO_NOT_CONFIGURED"})
-
-    try:
-        raw = get_cached_brief(force_refresh=True)
-    except Exception:
-        raw = _read_last_snapshot() or {}
-
-    today = datetime.now(timezone.utc).date().isoformat()
-    sig = str(raw.get("signal") or "neutral").upper()
-    macro = (raw.get("analysis") or raw.get("macro_summary") or "").strip()
-    headlines = raw.get("headlines") or []
-
-    top_lines = []
-    for h in headlines[:5]:
-        t = (h.get("title") or "").strip()
-        if t:
-            top_lines.append(f"- {t}")
-    top_block = "\n".join(top_lines) if top_lines else "(Ingen overskrifter tilgjengelig)"
-
-    subject = f"{APP_NAME} – Daglig makro ({today}) – {sig}"
-    body = (
-        f"{APP_NAME} – daglig makrosammendrag\n"
-        f"Dato: {today}\n"
-        f"Signal: {sig}\n\n"
-        f"{macro if macro else 'Ingen makrotekst tilgjengelig i dag.'}\n\n"
-        "Utvalgte overskrifter:\n"
-        f"{top_block}\n\n"
-        "Arkiv: /archive\n"
-        "(Automatisk utsendelse.)\n"
-    )
-
-    conn = _db()
-    rows = conn.execute("SELECT id, api_key, email, last_macro_sent_date FROM email_subscriptions").fetchall()
-    sent = 0
-
-    for row in rows:
-        if not is_valid_key(row["api_key"]):
-            continue
-        if (row["last_macro_sent_date"] or "") == today:
-            continue
-
-        try:
-            send_email(row["email"], subject, body)
-            conn.execute("UPDATE email_subscriptions SET last_macro_sent_date=? WHERE id=?", (today, row["id"]))
-            conn.commit()
-            sent += 1
-        except Exception:
-            continue
-
-    conn.close()
-    return {"ok": True, "sent": sent, "date": today}
-
-
-@app.get("/api/tasks/send-daily-premium")
-def api_send_daily_premium(admin_key: str = ""):
-    if admin_key != ADMIN_API_KEY:
-        return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED", "message": "admin_key feil."})
-
-    if not brevo_configured():
-        return JSONResponse(status_code=500, content={"error": "BREVO_NOT_CONFIGURED"})
-
-    try:
-        get_cached_brief(force_refresh=True)
-    except Exception:
-        pass
-
-    today = datetime.now(timezone.utc).date().isoformat()
-    last = _read_last_snapshot() or {}
-
-    sig = ((last.get("signal") or "neutral").upper())
-    price = safe_float(last.get("price_usd"))
-    chg = safe_float(last.get("change_pct"))
-    rsi14v = safe_float(last.get("rsi14"))
-    tscore = last.get("trend_score") if isinstance(last.get("trend_score"), int) else None
-    rep = (last.get("premium_report") or "").strip()
-
-    subject = f"{APP_NAME} Premium ({today}) – {sig}"
-
-    header_bits = []
-    if price is not None:
-        header_bits.append(f"Pris: {price:.2f} USD")
-    if chg is not None:
-        header_bits.append(f"Døgnendring: {chg:+.2f}%")
-    if rsi14v is not None:
-        header_bits.append(f"RSI(14): {rsi14v:.1f}")
-    if tscore is not None:
-        header_bits.append(f"Trend score: {tscore}/100")
-
-    body = (
-        f"{APP_NAME} Premium – daglig kommentar\n"
-        + ((" | ".join(header_bits)) + "\n\n" if header_bits else "\n")
-        + (rep + "\n\n" if rep else "Premium-rapport ikke tilgjengelig i dag.\n\n")
-        + "Arkiv: /archive\n"
-        + "(Automatisk utsendelse.)\n"
-    )
-
-    conn = _db()
-    rows = conn.execute("SELECT id, api_key, email, last_daily_sent_date FROM email_subscriptions").fetchall()
-    sent = 0
-
-    for row in rows:
-        if not is_valid_key(row["api_key"]):
-            continue
-        if (row["last_daily_sent_date"] or "") == today:
-            continue
-
-        try:
-            send_email(row["email"], subject, body)
-            conn.execute("UPDATE email_subscriptions SET last_daily_sent_date=? WHERE id=?", (today, row["id"]))
-            conn.commit()
-            sent += 1
-        except Exception:
-            continue
-
-    conn.close()
-    return {"ok": True, "sent": sent, "date": today}
-
-
-@app.get("/api/tasks/refresh-snapshot")
-def api_refresh_snapshot(admin_key: str = ""):
-    if admin_key != ADMIN_API_KEY:
-        return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED", "message": "admin_key feil."})
-    raw = get_cached_brief(force_refresh=True)
-    return {"ok": True, "updated_at": raw.get("updated_at"), "stored": True}
-
-
-@app.post("/api/tasks/send-test-email")
-async def api_send_test_email(req: Request, admin_key: str = ""):
-    try:
-        if admin_key != ADMIN_API_KEY:
-            return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED", "message": "admin_key feil."})
-
-        if not brevo_configured():
-            return JSONResponse(status_code=500, content={"error": "BREVO_NOT_CONFIGURED"})
-
-        body = await req.json()
-        email = (body.get("email") or "").strip().lower()
-        if "@" not in email:
-            return JSONResponse(status_code=400, content={"error": "BAD_EMAIL", "message": "Ugyldig e-post."})
-
-        subject = f"{APP_NAME} test ✅"
-        msg = (
-            f"Dette er en testmail fra {APP_NAME}.\n\n"
-            "Hvis du leser dette i innboksen (ikke spam), er Brevo-oppsettet i orden.\n"
-        )
-
-        send_email(email, subject, msg)
-        return {"ok": True, "email": email}
-
-    except Exception as e:
-        print("SEND_TEST_EMAIL_FAILED:\n" + traceback.format_exc())
-        return JSONResponse(status_code=500, content={"error": "SEND_FAILED", "message": str(e)})
-
-
-@app.get("/api/tasks/tcp-ping")
-def tcp_ping(host: str = "", port: int = 443, admin_key: str = ""):
-    if admin_key != ADMIN_API_KEY:
-        return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED", "message": "admin_key feil."})
-    if not host:
-        return JSONResponse(status_code=400, content={"error": "MISSING_HOST", "message": "host mangler."})
-    try:
-        with socket.create_connection((host, int(port)), timeout=8):
-            return {"ok": True, "host": host, "port": int(port)}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"ok": False, "host": host, "port": int(port), "error": str(e)})
-
-
-# =============================================================================
-# Stripe
-# =============================================================================
-
-@app.post("/api/stripe/create-checkout")
-async def api_stripe_create_checkout(req: Request):
-    try:
-        e = require_stripe(req)
-    except Exception as ex:
-        return JSONResponse(status_code=400, content={"error": "STRIPE_SETUP", "message": str(ex)})
-
-    try:
-        body = await req.json()
-    except Exception:
-        return JSONResponse(status_code=400, content={"error": "BAD_JSON", "message": "Body må være gyldig JSON."})
-
-    email = (body.get("email") or "").strip().lower()
-
-    try:
-        session = stripe.checkout.Session.create(
-            mode="subscription",
-            line_items=[{"price": e["price_id"], "quantity": 1}],
-            success_url=f"{e['success_url']}?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=e["cancel_url"],
-            customer_email=email if email else None,
-        )
-        return {"url": session.url}
-    except Exception as ex:
-        return JSONResponse(status_code=400, content={"error": "STRIPE_CREATE_CHECKOUT_FAILED", "message": str(ex)})
-
-
-SUCCESS_HTML = """<!doctype html>
-<html lang="no">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Gullbrief - Success</title>
-  <style>
-    body{margin:0;padding:30px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;background:#0f1720;color:#e5e7eb}
-    .card{max-width:780px;margin:0 auto;background:#16212c;border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:18px}
-    code{background:rgba(255,255,255,.07);padding:2px 6px;border-radius:8px}
-    button{border:0;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer;background:#d4af37;color:#0b0f14}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h2>Betaling registrert</h2>
-    <p>Vi henter premium-nøkkelen din nå.</p>
-    <p id="status">Laster…</p>
-    <p><strong>Premium-nøkkel:</strong> <code id="key">–</code></p>
-    <button id="btn">Åpne arkiv</button>
-  </div>
-
-<script>
-  const sessionId = "__SESSION_ID__";
-  const statusEl = document.getElementById("status");
-  const keyEl = document.getElementById("key");
-  document.getElementById("btn").addEventListener("click", ()=>{
-    if(keyEl.textContent && keyEl.textContent !== "–"){
-      localStorage.setItem("gullbrief_premium_key", keyEl.textContent);
-    }
-    location.href="/archive";
-  });
-
-  async function loadKey(){
-    try{
-      const res = await fetch("/api/stripe/claim-key?session_id=" + encodeURIComponent(sessionId), {cache:"no-store"});
-      const data = await res.json();
-      if(!res.ok) throw new Error(data?.message || ("HTTP "+res.status));
-      keyEl.textContent = data.api_key || "–";
-      statusEl.textContent = "OK. Nøkkel klar.";
-    }catch(e){
-      statusEl.textContent = "Venter på bekreftelse fra Stripe (webhook)… " + e;
-      setTimeout(loadKey, 1200);
-    }
-  }
-  if(sessionId){ loadKey(); } else { statusEl.textContent = "Mangler session_id."; }
-</script>
-</body>
-</html>
-"""
-
-
-@app.get("/success", response_class=HTMLResponse)
-def success_page(session_id: str = ""):
-    html = SUCCESS_HTML.replace("__SESSION_ID__", session_id or "")
-    return HTMLResponse(html)
-
-
-@app.get("/api/stripe/claim-key")
-def api_stripe_claim_key(session_id: str = ""):
-    try:
-        require_stripe()
-    except Exception as ex:
-        return JSONResponse(status_code=400, content={"error": "STRIPE_SETUP", "message": str(ex)})
-
-    if not session_id:
-        return JSONResponse(status_code=400, content={"error": "MISSING_SESSION_ID", "message": "session_id mangler."})
-
-    try:
-        session = stripe.checkout.Session.retrieve(session_id)
-        if session.get("status") != "complete":
-            return JSONResponse(status_code=409, content={"error": "NOT_COMPLETE", "message": "Checkout ikke complete."})
-
-        customer = str(session.get("customer") or "")
-        subscription = str(session.get("subscription") or "")
-        email = (session.get("customer_details") or {}).get("email") or session.get("customer_email") or ""
-        email = (email or "").strip().lower()
-
-        if not customer or not subscription:
-            return JSONResponse(status_code=400, content={"error": "MISSING_STRIPE_IDS", "message": "Mangler customer/subscription i session."})
-
-        api_key = _upsert_key_for_stripe(email=email, customer_id=customer, subscription_id=subscription)
-
-        conn = _db()
-        row = conn.execute("SELECT api_key, status FROM api_keys WHERE api_key=?", (api_key,)).fetchone()
-        conn.close()
-
-        if not row or row["status"] != "active":
-            return JSONResponse(status_code=409, content={"error": "NOT_ACTIVE", "message": "Abonnementet er ikke aktivert (venter på betaling/webhook)."})
-
-        return {"api_key": row["api_key"], "email": email}
-    except Exception as ex:
-        return JSONResponse(status_code=400, content={"error": "STRIPE_CLAIM_FAILED", "message": str(ex)})
-
-
-@app.post("/api/stripe/webhook")
-async def stripe_webhook(request: Request):
-    body_bytes = await request.body()
-    sig_header = request.headers.get("Stripe-Signature")
-    e = stripe_env()
-
-    if not e["webhook_secret"]:
-        return JSONResponse(status_code=500, content={"error": "Missing STRIPE_WEBHOOK_SECRET"})
-
-    try:
-        event = stripe.Webhook.construct_event(body_bytes, sig_header, e["webhook_secret"])
-    except stripe.error.SignatureVerificationError:
-        return JSONResponse(status_code=400, content={"error": "Invalid signature"})
-    except Exception as ex:
-        return JSONResponse(status_code=400, content={"error": "Webhook error", "message": str(ex)})
-
-    event_id = event.get("id", "")
-    event_type = event.get("type", "unknown")
-
-    if event_id:
-        if _already_processed(event_id):
-            return JSONResponse(status_code=200, content={"status": "duplicate_ignored"})
-        _mark_processed(event_id, event_type)
-
-    obj = (event.get("data") or {}).get("object") or {}
-
-    try:
-        if event_type == "checkout.session.completed":
-            customer = str(obj.get("customer") or "")
-            subscription = str(obj.get("subscription") or "")
-            email = (obj.get("customer_details") or {}).get("email") or obj.get("customer_email") or ""
-            email = (email or "").strip().lower()
-
-            if customer and subscription:
-                _upsert_key_for_stripe(email=email, customer_id=customer, subscription_id=subscription)
-                payment_status = (obj.get("payment_status") or "").strip().lower()
-                if payment_status == "paid":
-                    _set_key_status_for_customer(customer, "active")
-
-        elif event_type == "invoice.paid":
-            customer = str(obj.get("customer") or "")
-            subscription = str(obj.get("subscription") or "")
-            if customer:
-                conn = _db()
-                row = conn.execute("SELECT email FROM api_keys WHERE stripe_customer_id=?", (customer,)).fetchone()
-                conn.close()
-                email = (row["email"] if row else "") or ""
-                if subscription:
-                    _upsert_key_for_stripe(email=email, customer_id=customer, subscription_id=subscription)
-                _set_key_status_for_customer(customer, "active")
-
-        elif event_type == "invoice.payment_failed":
-            customer = str(obj.get("customer") or "")
-            if customer:
-                _set_key_status_for_customer(customer, "inactive")
-
-        elif event_type == "customer.subscription.deleted":
-            customer = str(obj.get("customer") or "")
-            if customer:
-                _set_key_status_for_customer(customer, "inactive")
-
-        elif event_type == "customer.subscription.updated":
-            customer = str(obj.get("customer") or "")
-            status = (obj.get("status") or "").strip().lower()
-            if customer:
-                _set_key_status_for_customer(customer, "active" if status in ("active", "trialing") else "inactive")
-
-    except Exception as ex:
-        return JSONResponse(status_code=500, content={"error": "WEBHOOK_HANDLER_FAILED", "message": str(ex)})
-
-    return JSONResponse(status_code=200, content={"status": "ok", "type": event_type})
-
-
-# =============================================================================
-# SEO: robots, sitemap, feed, og image
-# =============================================================================
-
-@app.get("/robots.txt", response_class=PlainTextResponse)
-def robots_txt(request: Request):
-    base = get_base_url(request)
-    txt = (
-        "User-agent: *\n"
-        "Allow: /\n"
-        "Disallow: /api/\n"
-        "Disallow: /success\n\n"
-        f"Sitemap: {base}/sitemap.xml\n"
-        f"Feed: {base}/feed.xml\n"
-    )
-    return PlainTextResponse(txt)
-
-
-@app.get("/sitemap.xml")
-def sitemap_xml(request: Request):
-    base = get_base_url(request)
-
-    static_urls = [
-        ("/gullpris-prognose", "daily"),
-        ("/", "daily"),
-        ("/premium", "weekly"),
-        ("/archive", "daily"),
-        ("/gullpris", "daily"),
-        ("/gullpris-analyse", "daily"),
-        ("/xauusd", "daily"),
-        ("/gullpris-signal", "daily"),
-    ]
-
-    archive_days = get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)
-    xml_items: List[str] = []
-
-    def add_url(path: str, freq: str, lastmod: Optional[str] = None) -> None:
-        loc = f"{base}{path}"
-        lm = f"<lastmod>{lastmod}</lastmod>" if lastmod else ""
-        xml_items.append(f"<url><loc>{loc}</loc>{lm}<changefreq>{freq}</changefreq></url>")
-
-    for path, freq in static_urls:
-        add_url(path, freq)
-
-    for d in archive_days:
-        add_url(f"/archive/{d}", "daily", lastmod=d)
-
-    xml = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
-        + "".join(xml_items)
-        + "</urlset>"
-    )
-    return Response(content=xml, media_type="application/xml")
-
-
-@app.get("/feed.xml")
-def feed_xml(request: Request):
-    base = get_base_url(request)
-    rows = read_history(limit=max(200, FEED_ITEMS * 5))
-    if not rows:
-        rss = (
-            '<?xml version="1.0" encoding="UTF-8"?>'
-            '<rss version="2.0"><channel>'
-            f"<title>{_escape_html(APP_NAME)} – oppdateringer</title>"
-            f"<link>{base}/</link>"
-            f"<description>{_escape_html(APP_NAME)}: gullpris, signal og daglige snapshots.</description>"
-            f"<language>no</language>"
-            "</channel></rss>"
-        )
-        return Response(content=rss, media_type="application/rss+xml")
-
-    items_xml = []
-    for r in list(reversed(rows))[:FEED_ITEMS]:
-        upd = str(r.get("updated_at") or "")
-        d = date_yyyy_mm_dd_from_iso_or_rss(upd) or ""
-        sig = str(r.get("signal") or "neutral").upper()
-        price = safe_float(r.get("price_usd"))
-        title = f"{APP_NAME}: {sig} – {d}" + (f" – {price:.2f} USD" if price is not None else "")
-        link = f"{base}/archive/{d}" if d else f"{base}/archive"
-        guid = link
-        desc = (r.get("macro_summary") or "")[:220]
-        pubdate = upd
-
-        items_xml.append(
-            "<item>"
-            f"<title>{_escape_html(title)}</title>"
-            f"<link>{_escape_html(link)}</link>"
-            f"<guid>{_escape_html(guid)}</guid>"
-            f"<description>{_escape_html(desc)}</description>"
-            f"<pubDate>{_escape_html(pubdate)}</pubDate>"
-            "</item>"
-        )
-
-    channel = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        '<rss version="2.0"><channel>'
-        f"<title>{_escape_html(APP_NAME)} – daglige snapshots</title>"
-        f"<link>{base}/</link>"
-        f"<description>{_escape_html(APP_NAME)}: gullpris, signal og makro, oppdatert daglig.</description>"
-        "<language>no</language>"
-        + "".join(items_xml)
-        + "</channel></rss>"
-    )
-    return Response(content=channel, media_type="application/rss+xml")
-
-
-@app.get("/og.svg")
-def og_svg(request: Request):
-    base = get_base_url(request)
-    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630">
-  <defs>
-    <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
-      <stop offset="0%" stop-color="#142234"/>
-      <stop offset="60%" stop-color="#0f1720"/>
-      <stop offset="100%" stop-color="#070b14"/>
-    </linearGradient>
-  </defs>
-  <rect width="1200" height="630" fill="url(#g)"/>
-  <circle cx="980" cy="160" r="120" fill="#d4af37" opacity="0.18"/>
-  <circle cx="1040" cy="210" r="160" fill="#d4af37" opacity="0.10"/>
-  <text x="80" y="210" fill="#e5e7eb" font-size="64" font-family="Georgia, serif" font-weight="700">{_escape_html(APP_NAME)}</text>
-  <text x="80" y="290" fill="#9aa3af" font-size="34" font-family="system-ui, -apple-system, Segoe UI, Roboto, Arial">Gullpris analyse • prognose • XAUUSD (daglig)</text>
-  <text x="80" y="420" fill="#e5e7eb" font-size="44" font-family="system-ui, -apple-system, Segoe UI, Roboto, Arial" font-weight="800">{_escape_html(base.replace("https://","").replace("http://",""))}</text>
-  <text x="80" y="500" fill="#9aa3af" font-size="28" font-family="system-ui, -apple-system, Segoe UI, Roboto, Arial">Gratis i dag • Premium: arkiv + signalhistorikk</text>
-</svg>"""
-    return Response(content=svg, media_type="image/svg+xml")
-
-
-# =============================================================================
 # Templates
 # =============================================================================
 
@@ -2095,9 +1438,11 @@ INDEX_BODY_TEMPLATE = """
   </header>
 
   <section class="hero">
-    <h1>Gullpris analyse uten støy.</h1>
+    <h1>Gullpris analyse</h1>
     <p>__DESC__</p>
   </section>
+
+  __NAV_TABS__
 
   <section class="grid">
     <div class="card">
@@ -2107,25 +1452,21 @@ INDEX_BODY_TEMPLATE = """
       <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
       <p class="muted" style="margin-top:12px" id="reason">–</p>
 
-      <h2 style="margin-top:14px">Makro i dag (Analyse)</h2>
+      <h2 style="margin-top:14px">Analyse</h2>
       <p class="muted" id="macro">–</p>
-
-      <p class="muted">
-      Se også <a href="/gullpris-prognose">gullpris prognose</a> og <a href="/xauusd">XAUUSD</a>.
-      </p>
 
       <div class="btnrow">
         <button id="btnReload">Oppdater</button>
         <button id="btnRefresh">Hard refresh</button>
-        <button onclick="location.href='/archive'">Åpne arkiv</button>
         <button onclick="location.href='/premium'">Premium</button>
+        <button onclick="location.href='/archive'">Arkiv</button>
       </div>
 
       <div class="muted" id="status" style="margin-top:8px">Status: …</div>
     </div>
 
     <div class="card">
-      <div class="title"><h2>Relevante nyheter</h2><div class="muted">Gratis</div></div>
+      <div class="title"><h2>Relevante nyheter</h2><div class="muted">Direkte kilder</div></div>
       <ul id="headlines"></ul>
     </div>
   </section>
@@ -2195,9 +1536,11 @@ PREMIUM_BODY_TEMPLATE = """
   </header>
 
   <section class="hero">
-    <h1>Premium: mer data, mindre støy.</h1>
-    <p>Få daglig premium-rapport, signalhistorikk og arkiv. E-post ved signalendring + daglig utsendelse.</p>
+    <h1>Premium</h1>
+    <p>Mer data, mindre støy. Daglig premium-rapport, signalhistorikk og arkiv.</p>
   </section>
+
+  __NAV_TABS__
 
   <section class="grid">
     <div class="card">
@@ -2206,7 +1549,7 @@ PREMIUM_BODY_TEMPLATE = """
         <li><b>Signalhistorikk (siste 30)</b> + treffsikkerhet</li>
         <li><b>Arkiv</b> med 7d/30d etter signal</li>
         <li><b>Daglig premium-rapport</b> på norsk</li>
-        <li><b>E-postvarsler</b> (daglig + ved signalendring)</li>
+        <li><b>E-postvarsler</b> ved signalendring og daglig utsendelse</li>
       </ul>
 
       <h2 style="margin-top:14px">Kjøp Premium</h2>
@@ -2219,15 +1562,14 @@ PREMIUM_BODY_TEMPLATE = """
     </div>
 
     <div class="card">
-      <div class="title"><h2>Hvordan det fungerer</h2><div class="muted">Kort</div></div>
-      <p class="muted">
-        Etter betaling sendes du til success-side hvor premium-nøkkelen hentes automatisk.
-        Derfra åpner du arkivet og nøkkelen lagres lokalt i nettleseren.
-      </p>
-      <div class="btnrow" style="margin-top:12px">
-        <button onclick="location.href='/archive'">Jeg har allerede nøkkel</button>
-        <button onclick="location.href='/gullpris'">Se gullpris i dag</button>
-      </div>
+      <div class="title"><h2>Hva rapporten inneholder</h2><div class="muted">Daglig</div></div>
+      <ul>
+        <li>Marked akkurat nå</li>
+        <li>Teknisk bilde med støtte og motstand</li>
+        <li>Base / Bull / Bear-scenario</li>
+        <li>Hva som bryter signalet</li>
+        <li>Watchlist neste 24–72t</li>
+      </ul>
     </div>
   </section>
 
@@ -2275,6 +1617,8 @@ SEO_LANDING_TEMPLATE = """
     <p>__INTRO__</p>
   </section>
 
+  __NAV_TABS__
+
   <section class="grid">
     <div class="card">
       <div class="title"><h2>Dagens status</h2><div class="muted" id="updatedAt">Oppdaterer…</div></div>
@@ -2294,15 +1638,10 @@ SEO_LANDING_TEMPLATE = """
     </div>
 
     <div class="card">
-      <div class="title"><h2>Relaterte sider</h2><div class="muted">SEO</div></div>
-      <ul>
-        <li><a href="/gullpris-analyse">Gullpris analyse</a></li>
-        <li><a href="/gullpris-prognose">Gullpris prognose</a></li>
-        <li><a href="/xauusd">XAUUSD</a></li>
-        <li><a href="/gullpris-signal">Gullpris signal</a></li>
-        <li><a href="/premium">Premium</a></li>
-      </ul>
-      <p class="muted">Tips: Del denne siden i sosiale medier for rask crawling.</p>
+      <div class="title"><h2>Nåværende fokus</h2><div class="muted">Gullbrief</div></div>
+      <p class="muted">
+        Denne siden er en del av samme analyseunivers som Gullbrief bruker for gullpris, scenario, XAUUSD og signal.
+      </p>
     </div>
   </section>
 
@@ -2346,10 +1685,12 @@ ARCHIVE_BODY_INNER = """
   <header>
     <div class="brand">__APP_NAME__ Arkiv</div>
     <div class="nav">
-      <a href="/">Til analyse</a>
+      <a href="/">Analyse</a>
       <a class="cta" href="/premium">Premium</a>
     </div>
   </header>
+
+  __NAV_TABS__
 
   <div class="grid" style="grid-template-columns:1fr">
     <div class="card">
@@ -2551,7 +1892,7 @@ ARCHIVE_BODY_INNER = """
 """
 
 
-def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, intro: str, mode: str) -> HTMLResponse:
+def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, intro: str, mode: str, nav_active: str) -> HTMLResponse:
     body = _replace_many(
         SEO_LANDING_TEMPLATE,
         {
@@ -2560,6 +1901,7 @@ def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, int
             "__INTRO__": _escape_html(intro),
             "__FOOTER__": footer_links(),
             "__MODE__": _escape_html(mode),
+            "__NAV_TABS__": nav_tabs(nav_active),
         },
     )
     return HTMLResponse(html_shell(request, title=title, description=desc, path=path, body_html=body))
@@ -2577,13 +1919,14 @@ def analysis_redirect():
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
     title = "Gullpris analyse – daglig gullbrief og markedssignal"
-    desc = "Daglig analyse av gullprisen: signal, trend, makro og nyheter. Premium gir arkiv, signalhistorikk og e-postvarsler."
+    desc = "Nøktern daglig analyse av gull. Fokus på trend, signal og makro."
     body = _replace_many(
         INDEX_BODY_TEMPLATE,
         {
             "__APP_NAME__": _escape_html(APP_NAME),
             "__DESC__": _escape_html(desc),
             "__FOOTER__": footer_links(),
+            "__NAV_TABS__": nav_tabs("analysis"),
         },
     )
     return HTMLResponse(html_shell(request, title=title, description=desc, path="/", body_html=body))
@@ -2598,6 +1941,7 @@ def premium_page(request: Request) -> HTMLResponse:
         {
             "__APP_NAME__": _escape_html(APP_NAME),
             "__FOOTER__": footer_links(),
+            "__NAV_TABS__": nav_tabs("premium"),
         },
     )
     return HTMLResponse(html_shell(request, title=title, description=desc, path="/premium", body_html=body))
@@ -2627,7 +1971,7 @@ def archive_page(request: Request) -> HTMLResponse:
 
     archive_map_html = (
         "<div class='card' style='margin-top:12px'>"
-        "<div style='font-size:18px;font-weight:900'>Arkivkart (for crawling)</div>"
+        "<div style='font-size:18px;font-weight:900'>Arkivkart</div>"
         "<div class='muted'>Lenker til de siste dagene.</div>"
         f"<ul>{''.join(links) if links else '<li class=\"muted\">Ingen arkiv-dager ennå.</li>'}</ul>"
         "</div>"
@@ -2638,6 +1982,7 @@ def archive_page(request: Request) -> HTMLResponse:
         {
             "__APP_NAME__": _escape_html(APP_NAME),
             "__FOOTER__": footer_links(),
+            "__NAV_TABS__": nav_tabs("premium"),
         },
     )
 
@@ -2698,6 +2043,7 @@ def archive_day_page(request: Request, day: str) -> HTMLResponse:
           <a class="cta" href="/premium">Premium</a>
         </div>
       </header>
+      __NAV_TABS__
       <section class="hero">
         <h1>Arkiv: __DAY__</h1>
         <p>Nøkkelpunkter fra dagens snapshot. Full historikk og statistikk: Premium.</p>
@@ -2728,6 +2074,7 @@ def archive_day_page(request: Request, day: str) -> HTMLResponse:
             "__REASON__": _escape_html(reason or "—"),
             "__MACRO__": _escape_html(macro or "—"),
             "__FOOTER__": footer_links(),
+            "__NAV_TABS__": nav_tabs("premium"),
         },
     )
 
@@ -2746,8 +2093,9 @@ def page_gullpris_prognose(request: Request) -> HTMLResponse:
         title="Gullpris prognose – scenario for de neste dagene",
         desc="Gullpris prognose basert på trend, signal og makrodrivere som renter, USD og geopolitikk.",
         h1="Gullpris prognose",
-        intro="Fremoverlent scenario for de neste 24–72 timene (base/bull/bear).",
+        intro="Fremoverskuende scenario for de neste 24–72 timene.",
         mode="forecast",
+        nav_active="forecast",
     )
 
 
@@ -2761,6 +2109,7 @@ def page_gullpris_analyse(request: Request) -> HTMLResponse:
         h1="Gullpris analyse",
         intro="Nøktern daglig analyse av gull. Fokus på trend, signal og makro.",
         mode="analysis",
+        nav_active="analysis",
     )
 
 
@@ -2772,8 +2121,9 @@ def page_xauusd(request: Request) -> HTMLResponse:
         title="XAUUSD – gull mot dollar: signal og analyse",
         desc="XAUUSD (gull mot USD): daglig signal, trend og drivere. Premium gir arkiv og signalhistorikk.",
         h1="XAUUSD",
-        intro="Spot gull vs USD: fokus på USD, renter og risk-on/off.",
+        intro="Spot gull mot USD med fokus på dollar, renter og risk-on/off.",
         mode="xauusd",
+        nav_active="xauusd",
     )
 
 
@@ -2785,8 +2135,9 @@ def page_gullpris_signal(request: Request) -> HTMLResponse:
         title="Gullpris signal – bullish/bearish og treffsikkerhet",
         desc="Gullpris signal (bullish/bearish/neutral) og forklaring. Premium viser signalhistorikk og 7d/30d etter signal.",
         h1="Gullpris signal",
-        intro="Se dagens signal og hvorfor det er satt. Premium viser historikk, 7d/30d og treffsikkerhet (siste 30).",
+        intro="Se dagens signal og hvorfor det er satt. Premium viser historikk, 7d/30d og treffsikkerhet.",
         mode="analysis",
+        nav_active="signal",
     )
 
 
@@ -2800,4 +2151,5 @@ def page_gullpris(request: Request) -> HTMLResponse:
         h1="Gullpris i dag",
         intro="Dagens pris og signal, med korte drivere og relevante nyheter.",
         mode="analysis",
+        nav_active="analysis",
     )
