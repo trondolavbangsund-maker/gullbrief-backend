@@ -1257,20 +1257,24 @@ def build_daily_social_post(data: Dict[str, Any], request: Optional[Request] = N
     signal_state = str(data.get("signal") or "neutral").upper()
     price = safe_float(data.get("price_usd"))
     change_pct = safe_float(data.get("change_pct"))
-    summary = str(data.get("analysis") or data.get("macro_summary") or "").strip()
     link_base = get_base_url(request) if request else (BASE_URL or "https://gullbrief.no")
     link = f"{link_base}/gullpris-analyse"
 
     price_txt = f"${price:,.2f}" if price is not None else "N/A"
     change_txt = f"{change_pct:+.2f}%" if change_pct is not None else "N/A"
 
-    short_summary = _clip_text(summary.replace("\n", " "), 110)
+    if signal_state == "BULLISH":
+        summary = "Gold remains supported by geopolitical tension and a positive technical trend."
+    elif signal_state == "BEARISH":
+        summary = "Gold is under pressure as momentum weakens and the technical picture softens."
+    else:
+        summary = "Gold is trading in a mixed range as markets weigh macro and geopolitical drivers."
 
     post = (
         f"Gold price update\n\n"
         f"Gold: {price_txt} ({change_txt})\n"
         f"Signal: {signal_state}\n\n"
-        f"{short_summary}\n\n"
+        f"{summary}\n\n"
         f"More: {link}\n\n"
         f"#gold #xauusd #goldprice #commodities"
     )
