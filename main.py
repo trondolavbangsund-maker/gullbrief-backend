@@ -1261,16 +1261,18 @@ def build_daily_social_post(data: Dict[str, Any], request: Optional[Request] = N
     link_base = get_base_url(request) if request else (BASE_URL or "https://gullbrief.no")
     link = f"{link_base}/gullpris-analyse"
 
-    price_txt = f"${price:,.2f}" if price is not None else "ukjent"
-    change_txt = f"{change_pct:+.2f}%" if change_pct is not None else "ukjent"
-    short_summary = _clip_text(summary.replace("\n", " "), 145)
+    price_txt = f"${price:,.2f}" if price is not None else "N/A"
+    change_txt = f"{change_pct:+.2f}%" if change_pct is not None else "N/A"
+
+    short_summary = _clip_text(summary.replace("\n", " "), 110)
 
     post = (
-        f"Gullpris i dag: {price_txt} ({change_txt})\n"
-        f"Signal: {signal_state}\n"
+        f"Gold price update\n\n"
+        f"Gold: {price_txt} ({change_txt})\n"
+        f"Signal: {signal_state}\n\n"
         f"{short_summary}\n\n"
-        f"Mer: {link}\n"
-        f"#gold #xauusd #gullpris"
+        f"More: {link}\n\n"
+        f"#gold #xauusd #goldprice #commodities"
     )
 
     return {
