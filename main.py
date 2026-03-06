@@ -2571,8 +2571,7 @@ def news_sitemap(request: Request):
     dates = get_archive_dates(last_n_days=30)
 
     parts = ['<?xml version="1.0" encoding="UTF-8"?>']
-    parts.append('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"')
-    parts.append('xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">')
+    parts.append('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">')
 
     for d in dates:
         parts.append(f"""
