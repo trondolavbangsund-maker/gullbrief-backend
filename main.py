@@ -2547,9 +2547,11 @@ def sitemap_xml(request: Request):
         "/feed.xml",
     ]
 
-    archive_urls = [f"/archive/{d}" for d in get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)]
+    archive_urls = [f"/archive/{d}" for d in get_archive_dates(last_n_days=45)]
 
-    parts = ['<?xml version="1.0" encoding="UTF-8"?>', '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+    parts = ['<?xml version="1.0" encoding="UTF-8"?>']
+    parts.append('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">')
+
     for p in static_urls + archive_urls:
         changefreq = "daily" if p not in ("/premium", "/archive") else "weekly"
         parts.append(
@@ -2558,8 +2560,37 @@ def sitemap_xml(request: Request):
             f"<changefreq>{changefreq}</changefreq>"
             "</url>"
         )
+
     parts.append("</urlset>")
-    return Response(content="".join(parts), media_type="application/xml")
+    return Response("".join(parts), media_type="application/xml")
+
+
+@app.get("/news-sitemap.xml")
+def news_sitemap(request: Request):
+    base = get_base_url(request)
+    dates = get_archive_dates(last_n_days=30)
+
+    parts = ['<?xml version="1.0" encoding="UTF-8"?>']
+    parts.append('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"')
+    parts.append('xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">')
+
+    for d in dates:
+        parts.append(f"""
+<url>
+<loc>{base}/archive/{d}</loc>
+<news:news>
+<news:publication>
+<news:name>Gullbrief</news:name>
+<news:language>no</news:language>
+</news:publication>
+<news:publication_date>{d}</news:publication_date>
+<news:title>Gullpris analyse {d}</news:title>
+</news:news>
+</url>
+""")
+
+    parts.append("</urlset>")
+    return Response("".join(parts), media_type="application/xml")
 
 
 @app.get(f"/{GOOGLE_SITE_VERIFICATION}")
