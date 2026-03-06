@@ -25,12 +25,12 @@ from fastapi.staticfiles import StaticFiles
 
 
 # =============================================================================
-# Gullbrief main.py – v3.6
-# - Fikser /api/public/today
-# - Relevante nyheter tilbake på høyre side på alle SEO-sider
-# - 5 gratis nyheter på offentlige sider
-# - Fullt datasett tilgjengelig i backend / premium-flyt
-# - Beholder premium / arkiv / Stripe / SEO / feed / sitemap / robots
+# Gullbrief main.py – v3.7
+# - Gull/XAUUSD/makro-filter for nyheter
+# - Engelske SEO-signaler i norske sider
+# - 5 gratis nyheter / flere i premium
+# - Premium / archive / Stripe / feed / sitemap / news-sitemap beholdt
+# - Twitter/X-klargjøring med daglig post-generator
 # =============================================================================
 
 
@@ -85,12 +85,76 @@ FEED_ITEMS = int(os.getenv("FEED_ITEMS", "20"))
 FREE_HEADLINES_LIMIT = int(os.getenv("FREE_HEADLINES_LIMIT", "5"))
 FULL_HEADLINES_LIMIT = int(os.getenv("FULL_HEADLINES_LIMIT", "15"))
 
+SOCIAL_DAILY_ENABLED = os.getenv("SOCIAL_DAILY_ENABLED", "false").strip().lower() == "true"
+SOCIAL_POST_URL = os.getenv("SOCIAL_POST_URL", "").strip()
+SOCIAL_POST_TOKEN = os.getenv("SOCIAL_POST_TOKEN", "").strip()
+
+PRIMARY_KEYWORDS = [
+    "gold",
+    "bullion",
+    "xau",
+    "xauusd",
+    "precious metal",
+]
+
+SECONDARY_KEYWORDS = [
+    "fed",
+    "rates",
+    "rate cut",
+    "rate hike",
+    "inflation",
+    "cpi",
+    "pce",
+    "dollar",
+    "usd",
+    "treasury",
+    "treasuries",
+    "bond",
+    "bonds",
+    "yield",
+    "yields",
+    "real yields",
+    "central bank",
+    "recession",
+    "safe haven",
+    "safe-haven",
+    "geopolitical",
+    "war",
+    "oil",
+    "crude",
+    "energy",
+    "middle east",
+    "middle-east",
+]
+
+CONTEXT_WORDS = [
+    "market",
+    "markets",
+    "price",
+    "prices",
+    "risk",
+    "stocks",
+    "economy",
+    "economic",
+    "investors",
+    "demand",
+    "supply",
+    "commodity",
+    "commodities",
+    "shipping",
+    "energy",
+    "futures",
+    "outlook",
+    "trade",
+    "trading",
+]
+
 
 # =============================================================================
 # App + CORS + Static
 # =============================================================================
 
-app = FastAPI(title=f"{APP_NAME} Backend", version="3.6", docs_url=None, redoc_url=None)
+app = FastAPI(title=f"{APP_NAME} Backend", version="3.7", docs_url=None, redoc_url=None)
 
 origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
@@ -151,7 +215,7 @@ def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: i
 
 def http_get_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> str:
     h = headers or {}
-    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/3.6)")
+    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/3.7)")
     h.setdefault("Accept", "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1")
     r = requests.get(url, headers=h, timeout=timeout, allow_redirects=True)
     r.raise_for_status()
@@ -210,6 +274,13 @@ def _replace_many(template: str, mapping: Dict[str, str]) -> str:
 
 def _hash_email(email: str) -> str:
     return hashlib.sha256(email.strip().lower().encode("utf-8")).hexdigest()[:16]
+
+
+def _clip_text(s: str, n: int) -> str:
+    s = (s or "").strip()
+    if len(s) <= n:
+        return s
+    return s[: max(0, n - 1)].rstrip() + "…"
 
 
 # =============================================================================
@@ -330,13 +401,6 @@ def is_valid_key(k: Optional[str]) -> bool:
     return bool(row) and row["status"] == "active"
 
 
-def _find_key(api_key: str) -> Optional[sqlite3.Row]:
-    conn = _db()
-    row = conn.execute("SELECT * FROM api_keys WHERE api_key=?", (api_key,)).fetchone()
-    conn.close()
-    return row
-
-
 def _upsert_key_for_stripe(email: str, customer_id: str, subscription_id: str) -> str:
     conn = _db()
     row = conn.execute(
@@ -410,7 +474,7 @@ class YahooPrice:
 
 
 def fetch_yahoo_chart(symbol: str, range_: str, interval: str) -> Dict[str, Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.6)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.7)"}
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
     return http_get_json(url, headers=headers)
 
@@ -567,7 +631,7 @@ def compute_technical_levels(symbol: str) -> Dict[str, Any]:
 
 
 # =============================================================================
-# RSS headlines
+# RSS headlines + relevance filter
 # =============================================================================
 
 def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
@@ -593,11 +657,24 @@ def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
     return items
 
 
+def is_gold_relevant_title(title: str) -> bool:
+    t = (title or "").strip().lower()
+    if not t:
+        return False
+
+    if any(k in t for k in PRIMARY_KEYWORDS):
+        return True
+
+    macro_hit = any(k in t for k in SECONDARY_KEYWORDS)
+    context_hit = any(k in t for k in CONTEXT_WORDS)
+    return macro_hit and context_hit
+
+
 def fetch_headlines(limit: int = FULL_HEADLINES_LIMIT) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
 
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.6)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/3.7)"}
     all_items: List[Dict[str, str]] = []
 
     for feed_url in RSS_FEEDS:
@@ -615,20 +692,31 @@ def fetch_headlines(limit: int = FULL_HEADLINES_LIMIT) -> List[Dict[str, str]]:
 
     all_items.sort(key=_sort_key, reverse=True)
 
-    seen, out = set(), []
+    seen = set()
+    filtered: List[Dict[str, str]] = []
+    fallback: List[Dict[str, str]] = []
+
     for it in all_items:
         lk = (it.get("link") or "").strip()
-        if not lk:
+        if not lk or lk in seen:
             continue
         if "/news/videos/" in lk:
             continue
-        if lk not in seen:
-            seen.add(lk)
-            out.append(it)
-        if len(out) >= limit:
-            break
 
-    return out
+        title = (it.get("title") or "").strip()
+        seen.add(lk)
+
+        if is_gold_relevant_title(title):
+            filtered.append(it)
+        else:
+            fallback.append(it)
+
+    out = filtered[:limit]
+    if len(out) < limit:
+        need = limit - len(out)
+        out.extend(fallback[:need])
+
+    return out[:limit]
 
 
 # =============================================================================
@@ -852,7 +940,7 @@ def build_brief() -> Dict[str, Any]:
 
     return {
         "updated_at": yp.ts,
-        "version": "3.6",
+        "version": "3.7",
         "symbol": yp.symbol,
         "currency": yp.currency,
         "price_usd": yp.last,
@@ -899,7 +987,7 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
 
     return {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.6"),
+        "version": data.get("version", "3.7"),
         "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
         "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
         "macro": {"mode": mode, "summary_short": summary},
@@ -979,7 +1067,7 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
 
     rec = {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "3.6"),
+        "version": data.get("version", "3.7"),
         "symbol": data.get("symbol"),
         "price_usd": data.get("price_usd"),
         "change_pct": data.get("change_pct"),
@@ -1159,6 +1247,61 @@ def send_email(to_email: str, subject: str, body: str) -> None:
 
     if r.status_code >= 400:
         raise RuntimeError(f"BREVO_HTTP_{r.status_code}: {r.text}")
+
+
+# =============================================================================
+# Social / Twitter/X
+# =============================================================================
+
+def build_daily_social_post(data: Dict[str, Any], request: Optional[Request] = None) -> Dict[str, Any]:
+    signal_state = str(data.get("signal") or "neutral").upper()
+    price = safe_float(data.get("price_usd"))
+    change_pct = safe_float(data.get("change_pct"))
+    summary = str(data.get("analysis") or data.get("macro_summary") or "").strip()
+    link_base = get_base_url(request) if request else (BASE_URL or "https://gullbrief.no")
+    link = f"{link_base}/gullpris-analyse"
+
+    price_txt = f"${price:,.2f}" if price is not None else "ukjent"
+    change_txt = f"{change_pct:+.2f}%" if change_pct is not None else "ukjent"
+    short_summary = _clip_text(summary.replace("\n", " "), 145)
+
+    post = (
+        f"Gullpris i dag: {price_txt} ({change_txt})\n"
+        f"Signal: {signal_state}\n"
+        f"{short_summary}\n\n"
+        f"Mer: {link}\n"
+        f"#gold #xauusd #gullpris"
+    )
+
+    return {
+        "date": datetime.now(timezone.utc).date().isoformat(),
+        "signal": signal_state,
+        "price_usd": price,
+        "change_pct": change_pct,
+        "text": post,
+        "url": link,
+        "enabled": SOCIAL_DAILY_ENABLED,
+        "configured": bool(SOCIAL_POST_URL and SOCIAL_POST_TOKEN),
+    }
+
+
+def send_social_post(text: str) -> Dict[str, Any]:
+    if not SOCIAL_POST_URL or not SOCIAL_POST_TOKEN:
+        return {"ok": False, "message": "SOCIAL_NOT_CONFIGURED"}
+
+    try:
+        r = requests.post(
+            SOCIAL_POST_URL,
+            headers={
+                "Authorization": f"Bearer {SOCIAL_POST_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json={"text": text},
+            timeout=20,
+        )
+        return {"ok": r.status_code < 400, "status_code": r.status_code, "body": r.text[:500]}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
 
 
 # =============================================================================
@@ -1457,10 +1600,10 @@ INDEX_BODY_TEMPLATE = """
       <p class="muted" style="margin-top:12px" id="reason">–</p>
 
       <h2 style="margin-top:14px">Analyse</h2>
-<p class="muted" id="macro">–</p>
-<div class="premiumhint">
-Les full analyse, flere nyheter og signalhistorikk i <a href="/premium">Premium</a>.
-</div>
+      <p class="muted" id="macro">–</p>
+      <div class="premiumhint">
+        Les full analyse, flere nyheter og signalhistorikk i <a href="/premium">Premium</a>.
+      </div>
 
       <div class="btnrow">
         <button id="btnReload">Oppdater</button>
@@ -1651,6 +1794,9 @@ SEO_LANDING_TEMPLATE = """
       <p class="muted" style="margin-top:12px" id="reason">–</p>
       <h2 style="margin-top:14px">Kort tekst</h2>
       <p class="muted" id="macro">–</p>
+      <div class="premiumhint">
+        Full analyse, flere nyheter og signalhistorikk ligger i <a href="/premium">Premium</a>.
+      </div>
 
       <div class="btnrow">
         <button id="btnReload">Oppdater</button>
@@ -2000,8 +2146,8 @@ def analysis_redirect():
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
-    title = "Gullpris analyse – daglig gullbrief og markedssignal"
-    desc = "Nøktern daglig analyse av gull. Fokus på trend, signal og makro."
+    title = "Gullpris analyse | Gold price analysis | daglig gullbrief og markedssignal"
+    desc = "Nøktern daglig analyse av gull og XAUUSD. Gold price analysis, trend, signal, forecast og makro."
     body = _replace_many(
         INDEX_BODY_TEMPLATE,
         {
@@ -2126,14 +2272,15 @@ def archive_day_page(request: Request, day: str) -> HTMLResponse:
         </div>
       </header>
       __NAV_TABS__
-     <section class="hero">
-<h1>Gullpris analyse __DAY__</h1>
-<p>
-Dette er Gullbrief sin daglige analyse av gullpris og XAUUSD for __DAY__.
-Her finner du markedssignal, teknisk trend og makrodrivere som påvirker gull.
-Premium gir tilgang til full signalhistorikk, flere nyheter og arkiv.
-</p>
-</section>
+      <section class="hero">
+        <h1>Gullpris analyse __DAY__</h1>
+        <p>
+          Dette er Gullbrief sin daglige analyse av gullpris og XAUUSD for __DAY__.
+          Dette er også en gold price analysis / daily gold market update for __DAY__.
+          Her finner du markedssignal, teknisk trend og makrodrivere som påvirker gull.
+          Premium gir tilgang til full signalhistorikk, flere nyheter og arkiv.
+        </p>
+      </section>
       <section class="grid" style="grid-template-columns:1fr">
         <div class="card">
           <div class="title"><h2>Dagens snapshot</h2><div class="muted">__HEADER__</div></div>
@@ -2164,8 +2311,8 @@ Premium gir tilgang til full signalhistorikk, flere nyheter og arkiv.
         },
     )
 
-    title = f"{APP_NAME} arkiv {day} – {sig}"
-    desc = f"{APP_NAME} snapshot {day}: {sig}. {header}. Kort makro og forklaring."
+    title = f"{APP_NAME} arkiv {day} – {sig} | gold price analysis {day}"
+    desc = f"{APP_NAME} snapshot {day}: {sig}. {header}. Gullpris analyse og gold price analysis for {day}."
     return HTMLResponse(
         html_shell(request, title=title, description=desc, path=f"/archive/{day}", body_html=body, article_date=day)
     )
@@ -2220,10 +2367,10 @@ def page_gullpris_prognose(request: Request) -> HTMLResponse:
     return seo_landing(
         request,
         path="/gullpris-prognose",
-        title="Gullpris prognose – scenario for de neste dagene",
-        desc="Gullpris prognose basert på trend, signal og makrodrivere som renter, USD og geopolitikk.",
+        title="Gullpris prognose | Gold price forecast | scenario for de neste dagene",
+        desc="Gullpris prognose og gold price forecast basert på trend, signal og makrodrivere som renter, USD og geopolitikk.",
         h1="Gullpris prognose",
-        intro="Fremoverskuende scenario for de neste 24–72 timene.",
+        intro="Fremoverskuende scenario for de neste 24–72 timene. Gold price forecast og XAUUSD outlook.",
         mode="forecast",
         nav_active="forecast",
     )
@@ -2234,10 +2381,10 @@ def page_gullpris_analyse(request: Request) -> HTMLResponse:
     return seo_landing(
         request,
         path="/gullpris-analyse",
-        title="Gullpris analyse – daglig signal og makro",
-        desc="Daglig gullpris analyse: signal, trend og makrodrivere. Se dagens status og oppdateringer.",
+        title="Gullpris analyse | Gold price analysis | daglig signal og makro",
+        desc="Daglig gullpris analyse og gold price analysis: signal, trend og makrodrivere. Se dagens status og oppdateringer.",
         h1="Gullpris analyse",
-        intro="Nøktern daglig analyse av gull. Fokus på trend, signal og makro.",
+        intro="Nøktern daglig analyse av gull. Fokus på trend, signal og makro. Gold price analysis og XAUUSD signal.",
         mode="analysis",
         nav_active="analysis",
     )
@@ -2248,8 +2395,8 @@ def page_xauusd(request: Request) -> HTMLResponse:
     return seo_landing(
         request,
         path="/xauusd",
-        title="XAUUSD – gull mot dollar: signal og analyse",
-        desc="XAUUSD (gull mot USD): daglig signal, trend og drivere. Premium gir arkiv og signalhistorikk.",
+        title="XAUUSD analyse | gold vs USD | signal og marked",
+        desc="XAUUSD analyse: gull mot dollar, trend, signal og drivere. Gold vs USD, rates, dollar and risk sentiment.",
         h1="XAUUSD",
         intro="Spot gull mot USD med fokus på dollar, renter og risk-on/off.",
         mode="xauusd",
@@ -2262,8 +2409,8 @@ def page_gullpris_signal(request: Request) -> HTMLResponse:
     return seo_landing(
         request,
         path="/gullpris-signal",
-        title="Gullpris signal – bullish/bearish og treffsikkerhet",
-        desc="Gullpris signal og forklaring. Premium viser signalhistorikk og 7d/30d etter signal.",
+        title="Gullpris signal | gold signal | bullish, bearish eller nøytral",
+        desc="Gullpris signal og gold signal med forklaring. Premium viser signalhistorikk og 7d/30d etter signal.",
         h1="Gullpris signal",
         intro="Se dagens signal og hvorfor det er satt. Premium viser historikk, 7d/30d og treffsikkerhet.",
         mode="analysis",
@@ -2276,8 +2423,8 @@ def page_gullpris(request: Request) -> HTMLResponse:
     return seo_landing(
         request,
         path="/gullpris",
-        title="Gullpris i dag – pris, signal og relevante nyheter",
-        desc="Gullpris i dag: pris (USD), signal og de viktigste nyhetene som påvirker gull.",
+        title="Gullpris i dag | Gold price today | pris, signal og nyheter",
+        desc="Gullpris i dag og gold price today: pris (USD), signal og de viktigste nyhetene som påvirker gull og XAUUSD.",
         h1="Gullpris i dag",
         intro="Dagens pris og signal, med korte drivere og relevante nyheter.",
         mode="analysis",
@@ -2365,6 +2512,45 @@ async def api_subscribe_email(request: Request, x_api_key: Optional[str] = Heade
         conn.close()
 
     return JSONResponse({"ok": True, "email": email})
+
+
+# =============================================================================
+# Social API
+# =============================================================================
+
+@app.get("/api/social/daily-post-text")
+def api_social_daily_post_text(request: Request):
+    try:
+        data = get_cached_brief(force_refresh=False)
+        post = build_daily_social_post(data, request)
+        return JSONResponse(post)
+    except Exception as e:
+        return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
+
+
+@app.post("/api/social/daily-post")
+def api_social_daily_post(request: Request, x_api_key: Optional[str] = Header(default=None)):
+    if x_api_key != ADMIN_API_KEY:
+        return JSONResponse({"message": "UNAUTHORIZED"}, status_code=401)
+
+    try:
+        data = get_cached_brief(force_refresh=False)
+        post = build_daily_social_post(data, request)
+        result = {
+            "enabled": SOCIAL_DAILY_ENABLED,
+            "configured": bool(SOCIAL_POST_URL and SOCIAL_POST_TOKEN),
+            "text": post["text"],
+        }
+
+        if SOCIAL_DAILY_ENABLED and SOCIAL_POST_URL and SOCIAL_POST_TOKEN:
+            send_result = send_social_post(post["text"])
+            result["send_result"] = send_result
+        else:
+            result["send_result"] = {"ok": False, "message": "SOCIAL_DISABLED_OR_NOT_CONFIGURED"}
+
+        return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
 
 
 # =============================================================================
@@ -2482,7 +2668,9 @@ def health():
             "stripe_price_id_prefix": stripe_env()["price_id"][:10] + "..." if stripe_env()["price_id"] else "",
             "stripe_webhook_secret_set": bool(stripe_env()["webhook_secret"]),
             "smtp_enabled": brevo_configured(),
-            "version": "3.6",
+            "social_daily_enabled": SOCIAL_DAILY_ENABLED,
+            "social_configured": bool(SOCIAL_POST_URL and SOCIAL_POST_TOKEN),
+            "version": "3.7",
         }
     )
 
@@ -2490,7 +2678,12 @@ def health():
 @app.get("/robots.txt")
 def robots_txt(request: Request):
     base = get_base_url(request)
-    txt = f"User-agent: *\nAllow: /\n\nSitemap: {base}/sitemap.xml\n"
+    txt = (
+        f"User-agent: *\n"
+        f"Allow: /\n\n"
+        f"Sitemap: {base}/sitemap.xml\n"
+        f"Sitemap: {base}/news-sitemap.xml\n"
+    )
     return PlainTextResponse(txt)
 
 
@@ -2547,7 +2740,7 @@ def sitemap_xml(request: Request):
         "/feed.xml",
     ]
 
-    archive_urls = [f"/archive/{d}" for d in get_archive_dates(last_n_days=45)]
+    archive_urls = [f"/archive/{d}" for d in get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)]
 
     parts = ['<?xml version="1.0" encoding="UTF-8"?>']
     parts.append('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">')
