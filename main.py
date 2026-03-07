@@ -1878,7 +1878,7 @@ INDEX_BODY_TEMPLATE = """
 
   <section class="grid">
     <div class="card">
-      <div class="title"><h2>Dagens status</h2><div class="muted" id="updatedAt">Oppdaterer…</div></div>
+      <div class="title"><h2>Gullpris i dag</h2><div class="muted" id="updatedAt">Oppdaterer…</div></div>
       <div class="big" id="price">$–</div>
       <div class="sub" id="change">–</div>
       <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
@@ -2094,7 +2094,7 @@ SEO_LANDING_TEMPLATE = """
 
   <section class="grid">
     <div class="card">
-      <div class="title"><h2>Dagens status</h2><div class="muted" id="updatedAt">Oppdaterer…</div></div>
+      <div class="title"><h2>Gullpris i dag</h2><div class="muted" id="updatedAt">Oppdaterer…</div></div>
       <div class="big" id="price">$–</div>
       <div class="sub" id="change">–</div>
       <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
@@ -2758,7 +2758,7 @@ def page_gullpris_analyse(request: Request) -> HTMLResponse:
         request,
         path="/gullpris-analyse",
         title="Gullpris analyse | Gold price analysis | daglig signal og makro",
-        desc="Daglig gullpris analyse og gold price analysis: signal, trend og makrodrivere. Se dagens status og oppdateringer.",
+        desc="Daglig gullpris analyse og gold price analysis: signal, trend og makrodrivere. Se Gullpris i dag og oppdateringer.",
         h1="Gullpris analyse",
         intro="Nøktern daglig analyse av gull. Fokus på trend, signal og makro. Gold price analysis og XAUUSD signal.",
         mode="analysis",
