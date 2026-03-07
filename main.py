@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import base64
 import hashlib
@@ -27,12 +27,12 @@ from fastapi.staticfiles import StaticFiles
 
 
 # =============================================================================
-# Gullbrief main.py – v4.0
-# - Snapshot-basert public rendering for raskere lastetid
-# - UI-tekst ryddet opp ("Kort tekst" fjernet)
-# - Premium-hint under nyheter forbedret
-# - Direkte X/Twitter-posting med OAuth 1.0a
-# - Premium / archive / Stripe / feed / sitemap / news-sitemap beholdt
+# Gullbrief main.py – v4.1
+# - Gratis analyse beholdt som før
+# - Premium gjort vesentlig lengre og mer utfyllende
+# - Nye sider: /kontakt /terms /privacy
+# - Forbedret premium-boks på forsiden
+# - Snapshot / archive / Stripe / X-posting / feed / sitemap beholdt
 # =============================================================================
 
 
@@ -71,6 +71,11 @@ SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", APP_NAME).strip()
 
 STRIPE_SUCCESS_URL_DEFAULT = os.getenv("STRIPE_SUCCESS_URL", "").strip()
 STRIPE_CANCEL_URL_DEFAULT = os.getenv("STRIPE_CANCEL_URL", "").strip()
+
+CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", SMTP_FROM_EMAIL or "kontakt@gullbrief.no").strip()
+LEGAL_COMPANY_NAME = os.getenv("LEGAL_COMPANY_NAME", APP_NAME).strip()
+LEGAL_ADDRESS = os.getenv("LEGAL_ADDRESS", "").strip()
+LEGAL_ORGNO = os.getenv("LEGAL_ORGNO", "").strip()
 
 GOOGLE_SITE_VERIFICATION = os.getenv("GOOGLE_SITE_VERIFICATION", "").strip()
 if not GOOGLE_SITE_VERIFICATION:
@@ -155,7 +160,7 @@ CONTEXT_WORDS = [
 # App + CORS + Static
 # =============================================================================
 
-app = FastAPI(title=f"{APP_NAME} Backend", version="4.0", docs_url=None, redoc_url=None)
+app = FastAPI(title=f"{APP_NAME} Backend", version="4.1", docs_url=None, redoc_url=None)
 
 origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
@@ -216,7 +221,7 @@ def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: i
 
 def http_get_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> str:
     h = headers or {}
-    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/4.0)")
+    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/4.1)")
     h.setdefault("Accept", "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1")
     r = requests.get(url, headers=h, timeout=timeout, allow_redirects=True)
     r.raise_for_status()
@@ -625,7 +630,7 @@ class YahooPrice:
 
 
 def fetch_yahoo_chart(symbol: str, range_: str, interval: str) -> Dict[str, Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/4.0)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/4.1)"}
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
     return http_get_json(url, headers=headers)
 
@@ -825,7 +830,7 @@ def fetch_headlines(limit: int = FULL_HEADLINES_LIMIT) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
 
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/4.0)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/4.1)"}
     all_items: List[Dict[str, str]] = []
 
     for feed_url in RSS_FEEDS:
@@ -906,47 +911,51 @@ def summarize_bundle_with_openai(
     ts_line = f"{trend_score}" if isinstance(trend_score, int) else "ukjent"
 
     prompt = (
-        f"Du er {APP_NAME}. Du skal skrive fire forskjellige tekster om gull basert på overskriftene.\n"
-        "Viktig:\n"
-        "- Norsk, nøkternt, ingen emojis, ingen investeringsråd.\n"
-        "- Ikke finn opp fakta. Hvis overskriftene ikke støtter noe, si 'uklart' eller 'ikke bekreftet i overskriftene'.\n"
-        "- Ikke gjenta samme formulering i alle feltene.\n"
-        "- Svar KUN som gyldig JSON med nøyaktig disse nøklene:\n"
-        '  {"analysis":"...", "forecast":"...", "xauusd":"...", "premium":"..."}\n\n'
-        "Kontekst:\n"
-        f"- Symbol: {YAHOO_SYMBOL}\n"
-        f"- Pris: {price_line}\n"
-        f"- Døgnendring: {chg_line}\n"
-        f"- RSI(14): {rsi_line}\n"
-        f"- Trend score: {ts_line}/100\n"
-        f"- Signal: {signal_state.upper()}\n"
-        f"- Indikator-årsak: {signal_reason}\n"
-        f"- Nær støtte: {fmt_level(levels.get('support_near'))}\n"
-        f"- Hovedstøtte: {fmt_level(levels.get('support_major'))}\n"
-        f"- Nær motstand: {fmt_level(levels.get('resistance_near'))}\n"
-        f"- Hovedmotstand: {fmt_level(levels.get('resistance_major'))}\n"
-        f"- SMA20: {fmt_level(levels.get('sma20'))}\n"
-        f"- SMA50: {fmt_level(levels.get('sma50'))}\n\n"
-        "Overskrifter:\n- " + "\n- ".join(titles) + "\n\n"
-        "Skriv:\n"
-        "- analysis: 5–7 linjer. Forklar hva som driver gull nå og hvorfor.\n"
-        "- forecast: 6–10 linjer. 24–72t scenario med base/bull/bear og tydelige triggere.\n"
-        "- xauusd: 5–7 linjer. Fokuser på spot gull mot USD, DXY, renter og risk-on/off.\n"
-        "- premium: 12–20 linjer. Struktur:\n"
-        "  Tittel: én linje\n"
-        "  Marked akkurat nå: 3–5 linjer\n"
-        "  Teknisk bilde: 3–5 linjer, bruk støtte/motstand/SMA\n"
-        "  Scenarier 24–72t:\n"
-        "  - Base: ...\n"
-        "  - Bull: ...\n"
-        "  - Bear: ...\n"
-        "  Hva bryter signalet:\n"
-        "  - ...\n"
-        "  - ...\n"
-        "  Watchlist neste 24–72t:\n"
-        "  - ...\n"
-        "  - ...\n"
-        "  - ...\n"
+        f"Du er {APP_NAME}. Du skal skrive fire forskjellige tekster om gull basert på overskriftene.\\n"
+        "Viktig:\\n"
+        "- Norsk, nøkternt, ingen emojis, ingen investeringsråd.\\n"
+        "- Ikke finn opp fakta. Hvis overskriftene ikke støtter noe, si 'uklart' eller 'ikke bekreftet i overskriftene'.\\n"
+        "- Ikke gjenta samme formulering i alle feltene.\\n"
+        "- Gratis analyse, forecast og xauusd skal være omtrent like lange som før.\\n"
+        "- Premium skal være klart lengre, mer detaljert og mer analytisk enn gratisdelen.\\n"
+        "- Svar KUN som gyldig JSON med nøyaktig disse nøklene:\\n"
+        '  {"analysis":"...", "forecast":"...", "xauusd":"...", "premium":"..."}\\n\\n'
+        "Kontekst:\\n"
+        f"- Symbol: {YAHOO_SYMBOL}\\n"
+        f"- Pris: {price_line}\\n"
+        f"- Døgnendring: {chg_line}\\n"
+        f"- RSI(14): {rsi_line}\\n"
+        f"- Trend score: {ts_line}/100\\n"
+        f"- Signal: {signal_state.upper()}\\n"
+        f"- Indikator-årsak: {signal_reason}\\n"
+        f"- Nær støtte: {fmt_level(levels.get('support_near'))}\\n"
+        f"- Hovedstøtte: {fmt_level(levels.get('support_major'))}\\n"
+        f"- Nær motstand: {fmt_level(levels.get('resistance_near'))}\\n"
+        f"- Hovedmotstand: {fmt_level(levels.get('resistance_major'))}\\n"
+        f"- SMA20: {fmt_level(levels.get('sma20'))}\\n"
+        f"- SMA50: {fmt_level(levels.get('sma50'))}\\n\\n"
+        "Overskrifter:\\n- " + "\\n- ".join(titles) + "\\n\\n"
+        "Skriv:\\n"
+        "- analysis: 5–7 linjer. Forklar hva som driver gull nå og hvorfor.\\n"
+        "- forecast: 6–10 linjer. 24–72t scenario med base/bull/bear og tydelige triggere.\\n"
+        "- xauusd: 5–7 linjer. Fokuser på spot gull mot USD, DXY, renter og risk-on/off.\\n"
+        "- premium: 26–40 linjer. Struktur:\\n"
+        "  Tittel: én linje\\n"
+        "  Executive summary: 3–4 linjer\\n"
+        "  Marked akkurat nå: 5–7 linjer\\n"
+        "  Teknisk bilde: 5–7 linjer med støtte/motstand/SMA/RSI/trend\\n"
+        "  Makrodrivere: 4–6 linjer\\n"
+        "  Scenarier 24–72t:\\n"
+        "  - Base: 2–4 linjer\\n"
+        "  - Bull: 2–4 linjer\\n"
+        "  - Bear: 2–4 linjer\\n"
+        "  Hva styrker signalet:\\n"
+        "  - minst 2 punkter\\n"
+        "  Hva bryter signalet:\\n"
+        "  - minst 2 punkter\\n"
+        "  Watchlist neste 24–72t:\\n"
+        "  - minst 4 punkter\\n"
+        "  Konklusjon: 2–3 linjer\\n"
     )
 
     try:
@@ -1011,40 +1020,56 @@ def premium_report_ai_from_bundle(
 
     if premium_text:
         return (
-            f"{APP_NAME} Premium ({datetime.now(timezone.utc).date().isoformat()})\n"
-            f"Pris: {price_line} | Døgnendring: {chg_line} | RSI(14): {rsi_line} | Trend score: {ts_line}\n"
-            f"Signal: {signal_state.upper()} ({signal_reason})\n"
-            f"Støtte nær: {support_near} | Hovedstøtte: {support_major}\n"
-            f"Motstand nær: {resistance_near} | Hovedmotstand: {resistance_major}\n"
-            f"SMA20: {sma20_line} | SMA50: {sma50_line}\n\n"
+            f"{APP_NAME} Premium ({datetime.now(timezone.utc).date().isoformat()})\\n"
+            f"Pris: {price_line} | Døgnendring: {chg_line} | RSI(14): {rsi_line} | Trend score: {ts_line}\\n"
+            f"Signal: {signal_state.upper()} ({signal_reason})\\n"
+            f"Støtte nær: {support_near} | Hovedstøtte: {support_major}\\n"
+            f"Motstand nær: {resistance_near} | Hovedmotstand: {resistance_major}\\n"
+            f"SMA20: {sma20_line} | SMA50: {sma50_line}\\n\\n"
             f"{premium_text}"
         )
 
-    titles = [h.get("title", "").strip() for h in headlines if h.get("title")][:6]
-    titles_block = "\n- ".join(titles) if titles else "(Ingen overskrifter tilgjengelig)"
+    titles = [h.get("title", "").strip() for h in headlines if h.get("title")][:8]
+    titles_block = "\\n- ".join(titles) if titles else "(Ingen overskrifter tilgjengelig)"
 
     return (
-        f"{APP_NAME} Premium ({datetime.now(timezone.utc).date().isoformat()})\n"
-        f"Pris: {price_line} | Døgnendring: {chg_line} | RSI(14): {rsi_line} | Trend score: {ts_line}\n"
-        f"Signal: {signal_state.upper()} ({signal_reason})\n"
-        f"Støtte nær: {support_near} | Hovedstøtte: {support_major}\n"
-        f"Motstand nær: {resistance_near} | Hovedmotstand: {resistance_major}\n"
-        f"SMA20: {sma20_line} | SMA50: {sma50_line}\n\n"
-        "Marked akkurat nå:\n"
-        f"{analysis_text or 'Markedet er blandet og nyhetsbildet gir ikke nok til et tydelig premium-sammendrag akkurat nå.'}\n\n"
-        "Scenarier 24–72t:\n"
-        f"{forecast_text or 'Base: videre konsolidering. Bull: svakere USD/renter. Bear: sterkere USD og høyere realrenter.'}\n\n"
-        "XAUUSD-fokus:\n"
-        f"{xauusd_text or 'Se spesielt på DXY, amerikanske renter og bred risk-on/off i markedet.'}\n\n"
-        "Nyhetsdriver (utdrag):\n- "
-        f"{titles_block}\n\n"
-        "Hva bryter signalet:\n"
-        "- Pris klart under kortsiktig støtte og SMA20\n"
-        "- Tydelig styrking i USD eller løft i renter\n\n"
-        "Watchlist neste 24–72t:\n"
-        "- DXY\n"
-        "- 10Y-renter / realrenter\n"
-        "- Makrooverskrifter med direkte effekt på gull"
+        f"{APP_NAME} Premium ({datetime.now(timezone.utc).date().isoformat()})\\n"
+        f"Pris: {price_line} | Døgnendring: {chg_line} | RSI(14): {rsi_line} | Trend score: {ts_line}\\n"
+        f"Signal: {signal_state.upper()} ({signal_reason})\\n"
+        f"Støtte nær: {support_near} | Hovedstøtte: {support_major}\\n"
+        f"Motstand nær: {resistance_near} | Hovedmotstand: {resistance_major}\\n"
+        f"SMA20: {sma20_line} | SMA50: {sma50_line}\\n\\n"
+        "Tittel:\\n"
+        "Utvidet premium-rapport\\n\\n"
+        "Executive summary:\\n"
+        f"{analysis_text or 'Markedet fremstår blandet, og nyhetsbildet gir ikke alene grunnlag for et sterkt ensidig case akkurat nå.'}\\n\\n"
+        "Marked akkurat nå:\\n"
+        f"{analysis_text or 'Markedet er avventende.'}\\n\\n"
+        "Teknisk bilde:\\n"
+        f"Signalet står nå som {signal_state.upper()} basert på forholdet mellom pris, SMA20 og SMA50.\\n"
+        f"RSI(14) ligger på {rsi_line}, noe som gir en pekepinn på kortsiktig momentum.\\n"
+        f"Nær støtte ligger ved {support_near}, mens hovedstøtte ligger ved {support_major}.\\n"
+        f"Nær motstand ligger ved {resistance_near}, mens hovedmotstand ligger ved {resistance_major}.\\n"
+        f"SMA20 på {sma20_line} og SMA50 på {sma50_line} er sentrale nivåer for å vurdere om trenden holder eller svekkes.\\n\\n"
+        "Makrodrivere:\\n"
+        f"{xauusd_text or 'USD, renter, realrenter og bred risk-on/off bør følges tett.'}\\n\\n"
+        "Scenarier 24–72t:\\n"
+        f"{forecast_text or 'Base: videre konsolidering. Bull: svakere USD/renter og sterkere safe haven-etterspørsel. Bear: sterkere USD og høyere realrenter.'}\\n\\n"
+        "Hva styrker signalet:\\n"
+        "- Pris holder seg over kortsiktig støtte og fortsetter å respektere SMA20\\n"
+        "- Ny makrostøy eller geopolitisk uro trekker kapital mot trygge havner\\n\\n"
+        "Hva bryter signalet:\\n"
+        "- Pris klart under kortsiktig støtte og SMA20\\n"
+        "- Tydelig styrking i USD eller løft i renter og realrenter\\n\\n"
+        "Watchlist neste 24–72t:\\n"
+        "- DXY\\n"
+        "- 10Y-renter / realrenter\\n"
+        "- Makrooverskrifter med direkte effekt på gull\\n"
+        "- Om pris nærmer seg eller avvises ved definerte motstandsnivåer\\n\\n"
+        "Nyhetsdriver (utdrag):\\n- "
+        f"{titles_block}\\n\\n"
+        "Konklusjon:\\n"
+        "Markedet måles best gjennom samspillet mellom teknisk struktur og makro. Når disse peker samme vei, øker kvaliteten i signalet. Når de spriker, stiger risikoen for støy og raske reverseringer."
     )
 
 
@@ -1091,7 +1116,7 @@ def build_brief() -> Dict[str, Any]:
 
     return {
         "updated_at": yp.ts,
-        "version": "4.0",
+        "version": "4.1",
         "symbol": yp.symbol,
         "currency": yp.currency,
         "price_usd": yp.last,
@@ -1157,7 +1182,7 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
 
     return {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "4.0"),
+        "version": data.get("version", "4.1"),
         "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
         "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
         "macro": {"mode": mode, "summary_short": summary},
@@ -1172,6 +1197,7 @@ def get_public_today_payload(mode: str = "analysis") -> Dict[str, Any]:
     return map_to_public_today(data, mode)
 
 
+    
 # =============================================================================
 # History
 # =============================================================================
@@ -1242,7 +1268,7 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
 
     rec = {
         "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", "4.0"),
+        "version": data.get("version", "4.1"),
         "symbol": data.get("symbol"),
         "price_usd": data.get("price_usd"),
         "change_pct": data.get("change_pct"),
@@ -1650,7 +1676,82 @@ COMMON_STYLE = """
   footer{margin-top:22px;color:var(--muted);font-size:13px}
   .links{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px}
   .links a{color:var(--muted)}
-  .premiumhint{margin-top:12px;padding:10px 12px;border-radius:12px;background:rgba(212,175,55,.08);border:1px solid rgba(212,175,55,.18);color:#f1e2a7}
+  .premiumhint{
+    margin-top:12px;
+    padding:14px 14px;
+    border-radius:14px;
+    background:rgba(212,175,55,.08);
+    border:1px solid rgba(212,175,55,.18);
+    color:#f1e2a7
+  }
+  .premiumbox{
+    margin-top:14px;
+    padding:16px;
+    border-radius:16px;
+    border:1px solid rgba(212,175,55,.24);
+    background:
+      radial-gradient(600px 240px at 0% 0%, rgba(212,175,55,.10), rgba(212,175,55,0) 60%),
+      linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.02));
+  }
+  .premiumbox h3{
+    margin:0 0 8px;
+    font-size:18px;
+    color:#f6e7ad;
+  }
+  .premiumbox p{
+    margin:0;
+    color:#d8d0b2;
+  }
+  .premiumbox-grid{
+    display:grid;
+    grid-template-columns:1fr;
+    gap:10px;
+    margin-top:12px;
+  }
+  @media (min-width:760px){
+    .premiumbox-grid{grid-template-columns:repeat(2,1fr)}
+  }
+  .premiummini{
+    padding:10px 12px;
+    border-radius:12px;
+    background:rgba(255,255,255,.04);
+    border:1px solid rgba(255,255,255,.06);
+    color:#efe7c5;
+    font-size:14px;
+  }
+  .premiumcta{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+    margin-top:14px;
+  }
+  .premiumcta a{
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    padding:10px 14px;
+    border-radius:999px;
+    font-weight:850;
+  }
+  .premiumcta .goldbtn{
+    background:var(--gold);
+    color:#10141b;
+  }
+  .premiumcta .ghostbtn{
+    background:rgba(255,255,255,.08);
+    color:var(--text);
+  }
+  .legal-card h2{
+    margin-top:0;
+  }
+  .legal-card h3{
+    margin-top:22px;
+    margin-bottom:8px;
+    font-size:17px;
+  }
+  .legal-card p, .legal-card li{
+    color:var(--text);
+  }
 </style>
 """
 
@@ -1728,9 +1829,31 @@ def footer_links() -> str:
         <a href="/xauusd">XAUUSD</a>
         <a href="/premium">Premium</a>
         <a href="/archive">Arkiv</a>
+        <a href="/kontakt">Kontakt</a>
+        <a href="/terms">Terms</a>
+        <a href="/privacy">Privacy</a>
       </div>
       <div style="margin-top:8px">© Gullbrief. Ikke investeringsråd.</div>
     </footer>
+    """
+
+
+def premium_feature_box() -> str:
+    return """
+    <div class="premiumbox">
+      <h3>⭐ Premium gir mer enn bare litt ekstra tekst</h3>
+      <p>Få den utvidede rapporten med dypere markedskommentar, tekniske nivåer, scenarioarbeid, flere nyheter og signalhistorikk.</p>
+      <div class="premiumbox-grid">
+        <div class="premiummini"><b>Utvidet premium-rapport</b><br/>Vesentlig lengre og mer utfyllende enn gratisanalysen.</div>
+        <div class="premiummini"><b>Signalhistorikk</b><br/>Se hvordan tidligere bullish og bearish signaler utviklet seg etter 7 og 30 dager.</div>
+        <div class="premiummini"><b>Flere markedssaker</b><br/>Gratis viser bare et utvalg. Premium gir bredere nyhetsbilde.</div>
+        <div class="premiummini"><b>Arkiv + e-postvarsler</b><br/>Følg signalendringer og få den daglige rapporten sendt direkte.</div>
+      </div>
+      <div class="premiumcta">
+        <a class="goldbtn" href="/premium">Åpne Premium</a>
+        <a class="ghostbtn" href="/archive">Se arkiv</a>
+      </div>
+    </div>
     """
 
 
@@ -1763,9 +1886,8 @@ INDEX_BODY_TEMPLATE = """
 
       <h2 style="margin-top:14px">Analyse</h2>
       <p class="muted" id="macro"></p>
-      <div class="premiumhint">
-        Les full analyse, flere nyheter og signalhistorikk i <a href="/premium">Premium</a>.
-      </div>
+
+      __PREMIUM_BOX__
 
       <div class="btnrow">
         <button id="btnReload">Oppdater</button>
@@ -1812,7 +1934,7 @@ INDEX_BODY_TEMPLATE = """
     const hint = $("premiumNewsHint");
     if(total > freeLimit){
       hint.style.display = "";
-      hint.innerHTML = `Viser ${freeLimit} nylige artikler. Premium gir tilgang til flere markedssaker og arkiv. <a href="/premium">Åpne Premium</a>`;
+      hint.innerHTML = `Viser ${freeLimit} nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href="/premium">Åpne Premium</a>`;
     }else{
       hint.style.display = "none";
       hint.textContent = "";
@@ -1896,7 +2018,7 @@ PREMIUM_BODY_TEMPLATE = """
       <ul>
         <li><b>Signalhistorikk (siste 30)</b> + treffsikkerhet</li>
         <li><b>Arkiv</b> med 7d/30d etter signal</li>
-        <li><b>Daglig premium-rapport</b> på norsk</li>
+        <li><b>Daglig premium-rapport</b> på norsk, vesentlig lengre enn gratisanalyse</li>
         <li><b>Flere nyheter</b> enn gratisversjonen</li>
         <li><b>E-postvarsler</b> ved signalendring og daglig utsendelse</li>
       </ul>
@@ -1913,11 +2035,13 @@ PREMIUM_BODY_TEMPLATE = """
     <div class="card">
       <div class="title"><h2>Hva rapporten inneholder</h2><div class="muted">Daglig</div></div>
       <ul>
-        <li>Marked akkurat nå</li>
-        <li>Teknisk bilde med støtte og motstand</li>
+        <li>Executive summary og marked akkurat nå</li>
+        <li>Teknisk bilde med støtte, motstand, SMA og momentum</li>
+        <li>Makrodrivere og XAUUSD-vinkel</li>
         <li>Base / Bull / Bear-scenario</li>
-        <li>Hva som bryter signalet</li>
+        <li>Hva som styrker og hva som bryter signalet</li>
         <li>Watchlist neste 24–72t</li>
+        <li>Konklusjon med samlet vurdering</li>
       </ul>
     </div>
   </section>
@@ -1976,9 +2100,8 @@ SEO_LANDING_TEMPLATE = """
       <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
       <p class="muted" style="margin-top:12px" id="reason">–</p>
       <p class="muted" id="macro"></p>
-      <div class="premiumhint">
-        Full analyse, flere nyheter og signalhistorikk ligger i <a href="/premium">Premium</a>.
-      </div>
+
+      __PREMIUM_BOX__
 
       <div class="btnrow">
         <button id="btnReload">Oppdater</button>
@@ -2023,7 +2146,7 @@ SEO_LANDING_TEMPLATE = """
     const hint = $("premiumNewsHint");
     if(total > freeLimit){
       hint.style.display = "";
-      hint.innerHTML = `Viser ${freeLimit} nylige artikler. Premium gir tilgang til flere markedssaker og arkiv. <a href="/premium">Åpne Premium</a>`;
+      hint.innerHTML = `Viser ${freeLimit} nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href="/premium">Åpne Premium</a>`;
     }else{
       hint.style.display = "none";
       hint.textContent = "";
@@ -2324,6 +2447,33 @@ SUCCESS_TEMPLATE = """
 """
 
 
+LEGAL_PAGE_TEMPLATE = """
+<div class="wrap">
+  <header>
+    <div class="brand">__APP_NAME__</div>
+    <div class="nav">
+      <a href="/">Analyse</a>
+      <a href="/archive">Arkiv</a>
+      <a class="cta" href="/premium">Premium</a>
+    </div>
+  </header>
+
+  <section class="hero">
+    <h1>__TITLE__</h1>
+    <p>__INTRO__</p>
+  </section>
+
+  <section class="grid" style="grid-template-columns:1fr">
+    <div class="card legal-card">
+      __CONTENT__
+    </div>
+  </section>
+
+  __FOOTER__
+</div>
+"""
+
+
 def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, intro: str, mode: str, nav_active: str) -> HTMLResponse:
     initial_payload = get_public_today_payload(mode)
 
@@ -2337,11 +2487,27 @@ def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, int
             "__MODE__": _escape_html(mode),
             "__NAV_TABS__": nav_tabs(nav_active),
             "__INITIAL_JSON__": json_for_html(initial_payload),
+            "__PREMIUM_BOX__": premium_feature_box(),
         },
     )
     return HTMLResponse(html_shell(request, title=title, description=desc, path=path, body_html=body))
 
 
+def legal_page(request: Request, path: str, title: str, intro: str, content_html: str) -> HTMLResponse:
+    body = _replace_many(
+        LEGAL_PAGE_TEMPLATE,
+        {
+            "__APP_NAME__": _escape_html(APP_NAME),
+            "__TITLE__": _escape_html(title),
+            "__INTRO__": _escape_html(intro),
+            "__CONTENT__": content_html,
+            "__FOOTER__": footer_links(),
+        },
+    )
+    return HTMLResponse(html_shell(request, title=title, description=intro, path=path, body_html=body))
+
+
+    
 # =============================================================================
 # Pages
 # =============================================================================
@@ -2366,6 +2532,7 @@ def index(request: Request) -> HTMLResponse:
             "__FOOTER__": footer_links(),
             "__NAV_TABS__": nav_tabs("analysis"),
             "__INITIAL_JSON__": json_for_html(initial_payload),
+            "__PREMIUM_BOX__": premium_feature_box(),
         },
     )
     return HTMLResponse(html_shell(request, title=title, description=desc, path="/", body_html=body))
@@ -2641,6 +2808,112 @@ def page_gullpris(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/kontakt", response_class=HTMLResponse)
+def kontakt_page(request: Request) -> HTMLResponse:
+    content = f"""
+    <h2>Kontakt</h2>
+    <p>Har du spørsmål om Premium, betaling, tilgang, samarbeid eller tekniske problemer, kan du kontakte oss på e-post.</p>
+
+    <h3>E-post</h3>
+    <p><a href="mailto:{_escape_html(CONTACT_EMAIL)}">{_escape_html(CONTACT_EMAIL)}</a></p>
+
+    <h3>Om tjenesten</h3>
+    <p>{_escape_html(APP_NAME)} publiserer daglige markedskommentarer om gullpris, XAUUSD, signaler og relaterte nyhetsdrivere.</p>
+
+    <h3>Viktig</h3>
+    <p>Innholdet er kun ment som informasjon og markedskommentar. Det er ikke investeringsrådgivning, personlig rådgivning eller en oppfordring til kjøp eller salg av finansielle instrumenter.</p>
+    """
+    return legal_page(
+        request,
+        path="/kontakt",
+        title="Kontakt",
+        intro="Kontaktinformasjon for spørsmål om Gullbrief, Premium og tilgang.",
+        content_html=content,
+    )
+
+
+@app.get("/terms", response_class=HTMLResponse)
+def terms_page(request: Request) -> HTMLResponse:
+    org_line = f"<p><b>Leverandør:</b> {_escape_html(LEGAL_COMPANY_NAME)}</p>"
+    if LEGAL_ORGNO:
+        org_line += f"<p><b>Org.nr:</b> {_escape_html(LEGAL_ORGNO)}</p>"
+    if LEGAL_ADDRESS:
+        org_line += f"<p><b>Adresse:</b> {_escape_html(LEGAL_ADDRESS)}</p>"
+
+    content = f"""
+    <h2>Vilkår</h2>
+    {org_line}
+    <p><b>Kontakt:</b> <a href="mailto:{_escape_html(CONTACT_EMAIL)}">{_escape_html(CONTACT_EMAIL)}</a></p>
+
+    <h3>1. Om tjenesten</h3>
+    <p>{_escape_html(APP_NAME)} leverer informasjon, markedskommentarer, signaler og analyser relatert til gullpris og XAUUSD. Tjenesten leveres som den er, og innhold kan endres uten varsel.</p>
+
+    <h3>2. Ikke investeringsråd</h3>
+    <p>Alt innhold er kun ment som generell informasjon. Innholdet utgjør ikke investeringsråd, finansiell rådgivning eller personlig anbefaling. Du er selv ansvarlig for egne beslutninger.</p>
+
+    <h3>3. Premium og betaling</h3>
+    <p>Premium gir tilgang til utvidet innhold som arkiv, signalhistorikk, flere nyheter og lengre rapporter. Betaling håndteres via Stripe. Ved tekniske problemer med aktivering kan du kontakte oss.</p>
+
+    <h3>4. Tilgang</h3>
+    <p>Premium-tilgang er personlig og skal ikke deles videre. Misbruk, automatisert uthenting eller forsøk på å omgå tilgangskontroll kan føre til stenging av tilgang.</p>
+
+    <h3>5. Ansvarsbegrensning</h3>
+    <p>Vi forsøker å holde informasjonen oppdatert, men garanterer ikke for fullstendighet, korrekthet eller tilgjengelighet til enhver tid. Vi er ikke ansvarlige for tap, direkte eller indirekte, som følge av bruk av tjenesten.</p>
+
+    <h3>6. Endringer</h3>
+    <p>Disse vilkårene kan oppdateres. Den til enhver tid publiserte versjonen på nettstedet gjelder.</p>
+    """
+    return legal_page(
+        request,
+        path="/terms",
+        title="Terms",
+        intro="Vilkår for bruk av Gullbrief og Premium.",
+        content_html=content,
+    )
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy_page(request: Request) -> HTMLResponse:
+    content = f"""
+    <h2>Personvern</h2>
+    <p>Denne siden beskriver hvordan {_escape_html(APP_NAME)} behandler personopplysninger.</p>
+
+    <h3>1. Hvilke opplysninger som kan behandles</h3>
+    <ul>
+      <li>E-postadresse ved kjøp eller påmelding til varsler</li>
+      <li>Premium-nøkkel og tilhørende abonnementsstatus</li>
+      <li>Tekniske data som kan oppstå i forbindelse med bruk av nettstedet og betaling</li>
+    </ul>
+
+    <h3>2. Formål</h3>
+    <ul>
+      <li>Levere Premium-tilgang</li>
+      <li>Sende daglige rapporter eller signalvarsler hvis du har meldt deg på</li>
+      <li>Håndtere betaling og kundeservice</li>
+      <li>Forebygge misbruk og sikre stabil drift</li>
+    </ul>
+
+    <h3>3. Betaling</h3>
+    <p>Betaling behandles av Stripe. Kortdata håndteres ikke direkte av {_escape_html(APP_NAME)}.</p>
+
+    <h3>4. Lagring</h3>
+    <p>Vi lagrer bare opplysninger som er nødvendige for å levere tjenesten. E-post og abonnementsstatus kan lagres så lenge det er nødvendig for aktiv tilgang, varslinger eller oppfølging.</p>
+
+    <h3>5. Deling</h3>
+    <p>Opplysninger deles ikke med uvedkommende, med unntak av nødvendige tredjepartsleverandører for betaling og utsendelse, som Stripe og Brevo, når dette brukes.</p>
+
+    <h3>6. Dine rettigheter</h3>
+    <p>Du kan be om innsyn, retting eller sletting av opplysninger ved å kontakte oss på <a href="mailto:{_escape_html(CONTACT_EMAIL)}">{_escape_html(CONTACT_EMAIL)}</a>.</p>
+    """
+    return legal_page(
+        request,
+        path="/privacy",
+        title="Privacy",
+        intro="Informasjon om hvordan Gullbrief behandler personopplysninger.",
+        content_html=content,
+    )
+
+
 # =============================================================================
 # Public API
 # =============================================================================
@@ -2882,7 +3155,7 @@ def health():
             "smtp_enabled": brevo_configured(),
             "social_daily_enabled": SOCIAL_DAILY_ENABLED,
             "social_configured": x_configured(),
-            "version": "4.0",
+            "version": "4.1",
         }
     )
 
@@ -2950,6 +3223,9 @@ def sitemap_xml(request: Request):
         "/xauusd",
         "/premium",
         "/archive",
+        "/kontakt",
+        "/terms",
+        "/privacy",
         "/feed.xml",
     ]
 
@@ -2959,7 +3235,7 @@ def sitemap_xml(request: Request):
     parts.append('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">')
 
     for p in static_urls + archive_urls:
-        changefreq = "daily" if p not in ("/premium", "/archive") else "weekly"
+        changefreq = "daily" if p not in ("/premium", "/archive", "/terms", "/privacy", "/kontakt") else "weekly"
         parts.append(
             "<url>"
             f"<loc>{_escape_html(base + p)}</loc>"
@@ -3001,3 +3277,13 @@ def news_sitemap(request: Request):
 @app.get(f"/{GOOGLE_SITE_VERIFICATION}")
 def google_site_verification():
     return PlainTextResponse(GOOGLE_SITE_VERIFICATION)
+
+
+# =============================================================================
+# Optional local run
+# =============================================================================
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=False)
