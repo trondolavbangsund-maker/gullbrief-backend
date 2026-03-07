@@ -1500,6 +1500,7 @@ def nav_tabs(active: str) -> str:
     tabs = [
         ("/gullpris-analyse", "analysis", "📈 Analyse"),
         ("/gullpris-prognose", "forecast", "🔮 Prognose"),
+        ("/gold-price-forecast", "gold_forecast", "🌍 Gold forecast"),
         ("/xauusd", "xauusd", "💵 XAUUSD"),
         ("/gullpris-signal", "signal", "🚦 Signal"),
         ("/premium", "premium", "⭐ Premium"),
@@ -1827,6 +1828,7 @@ def footer_links() -> str:
         <a href="/gullpris">Gullpris i dag</a>
         <a href="/gullpris-analyse">Gullpris analyse</a>
         <a href="/gullpris-signal">Gullpris signal</a>
+        <a href="/gold-price-forecast">Gold price forecast</a>
         <a href="/xauusd">XAUUSD</a>
         <a href="/premium">Premium</a>
         <a href="/archive">Arkiv</a>
@@ -1871,7 +1873,7 @@ INDEX_BODY_TEMPLATE = """
   </header>
 
   <section class="hero">
-    <h1>Gullpris analyse</h1>
+    <h1>Gullpris i dag – analyse, prognose og signal for gull (XAUUSD)</h1>
     <p>__DESC__</p>
   </section>
 
@@ -2520,8 +2522,8 @@ def analysis_redirect():
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
-    title = "Gullpris analyse | Gold price analysis | daglig gullbrief og markedssignal"
-    desc = "Nøktern daglig analyse av gull og XAUUSD. Gold price analysis, trend, signal, forecast og makro."
+    title = "Gullpris i dag – analyse, prognose og signal for gull (XAUUSD)"
+    desc = "Gullpris i dag med daglig analyse, prognose og signal for gull (XAUUSD). Følg trend, makro og markedssignal."
 
     initial_payload = get_public_today_payload("analysis")
 
@@ -2753,6 +2755,20 @@ def page_gullpris_prognose(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/gold-price-forecast", response_class=HTMLResponse)
+def page_gold_price_forecast(request: Request) -> HTMLResponse:
+    return seo_landing(
+        request,
+        path="/gold-price-forecast",
+        title="Gold Price Forecast | XAUUSD outlook and daily scenario",
+        desc="Daily gold price forecast for XAUUSD based on trend, signal and macro drivers such as USD, rates and geopolitics.",
+        h1="Gold Price Forecast – Short Term Outlook for XAUUSD",
+        intro="Daily gold price forecast for the next 24–72 hours based on trend, signal, technical levels and macro developments.",
+        mode="forecast",
+        nav_active="gold_forecast",
+    )
+
+
 @app.get("/gullpris-analyse", response_class=HTMLResponse)
 def page_gullpris_analyse(request: Request) -> HTMLResponse:
     return seo_landing(
@@ -2841,7 +2857,7 @@ def terms_page(request: Request) -> HTMLResponse:
     if LEGAL_ADDRESS:
         org_line += f"<p><b>Adresse:</b> {_escape_html(LEGAL_ADDRESS)}</p>"
 
-        content = f"""
+    content = f"""
     <h2>Vilkår</h2>
     {org_line}
     <p><b>Kontakt:</b> <a href="mailto:{_escape_html(CONTACT_EMAIL)}">{_escape_html(CONTACT_EMAIL)}</a></p>
@@ -3240,6 +3256,7 @@ def sitemap_xml(request: Request):
         "/gullpris-analyse",
         "/gullpris-prognose",
         "/gullpris-signal",
+        "/gold-price-forecast",
         "/xauusd",
         "/premium",
         "/archive",
