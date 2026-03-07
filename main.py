@@ -1521,6 +1521,7 @@ def jsonld_website(base: str) -> str:
         "@type": "WebSite",
         "name": APP_NAME,
         "url": f"{base}/",
+        "logo": f"{base}/static/apple-touch-icon.png",
         "inLanguage": "no",
         "potentialAction": {
             "@type": "SearchAction",
