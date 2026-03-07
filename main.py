@@ -2840,7 +2840,7 @@ def terms_page(request: Request) -> HTMLResponse:
     if LEGAL_ADDRESS:
         org_line += f"<p><b>Adresse:</b> {_escape_html(LEGAL_ADDRESS)}</p>"
 
-    content = f"""
+        content = f"""
     <h2>Vilkår</h2>
     {org_line}
     <p><b>Kontakt:</b> <a href="mailto:{_escape_html(CONTACT_EMAIL)}">{_escape_html(CONTACT_EMAIL)}</a></p>
@@ -2864,25 +2864,23 @@ def terms_page(request: Request) -> HTMLResponse:
     <p>Disse vilkårene kan oppdateres. Den til enhver tid publiserte versjonen på nettstedet gjelder.</p>
 
     <h3>Financial disclaimer</h3>
+    <p>
+    Innholdet på Gullbrief er kun ment som generell informasjon og markedskommentar.
+    Det utgjør ikke investeringsråd, finansiell rådgivning eller en anbefaling om
+    å kjøpe eller selge finansielle instrumenter.
+    </p>
 
-<p>
-Innholdet på Gullbrief er kun ment som generell informasjon og markedskommentar.
-Det utgjør ikke investeringsråd, finansiell rådgivning eller en anbefaling om
-å kjøpe eller selge finansielle instrumenter.
-</p>
+    <p>
+    Forfatteren gir ingen garanti for nøyaktighet eller fullstendighet.
+    All bruk av informasjon fra nettstedet skjer på eget ansvar.
+    </p>
 
-<p>
-Forfatteren gir ingen garanti for nøyaktighet eller fullstendighet.
-All bruk av informasjon fra nettstedet skjer på eget ansvar.
-</p>
-
-<h3>Market commentary</h3>
-
-<p>
-Analyser, signaler og prognoser er basert på tilgjengelige data, tekniske
-indikatorer og offentlige nyhetskilder. Disse kan endre seg raskt og skal
-ikke tolkes som garantier for fremtidig utvikling.
-</p>
+    <h3>Market commentary</h3>
+    <p>
+    Analyser, signaler og prognoser er basert på tilgjengelige data, tekniske
+    indikatorer og offentlige nyhetskilder. Disse kan endre seg raskt og skal
+    ikke tolkes som garantier for fremtidig utvikling.
+    </p>
     """
     return legal_page(
         request,
