@@ -2605,6 +2605,15 @@ def index(request: Request) -> HTMLResponse:
             "__NAV_TABS__": nav_tabs("analysis"),
             "__INITIAL_JSON__": json_for_html(initial_payload),
             "__PREMIUM_BOX__": premium_feature_box(),
+            "__CARD_TITLE__": "Gullpris i dag",
+            "__UPDATED_LOADING__": "Oppdaterer…",
+            "__CHANGE_LOADING__": "Endring: –",
+            "__UPDATED_LABEL__": "Oppdatert: ",
+            "__CHANGE_LABEL__": "Endring: ",
+            "__DATE_LOCALE__": "nb-NO",
+            "__HEADLINES_TITLE__": "Relevante nyheter",
+            "__HEADLINES_SUB__": "Direkte kilder",
+            "__PREMIUM_NEWS_HINT__": "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=\"/premium\">Åpne Premium</a>",
         },
     )
     return HTMLResponse(html_shell(request, title=title, description=desc, path="/", body_html=body))
