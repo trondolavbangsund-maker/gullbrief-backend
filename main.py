@@ -1459,7 +1459,7 @@ def build_daily_social_post(data: Dict[str, Any], request: Optional[Request] = N
     price = safe_float(data.get("price_usd"))
     change_pct = safe_float(data.get("change_pct"))
     link_base = get_base_url(request) if request else (BASE_URL or "https://gullbrief.no")
-    link = f"{link_base}/gullpris-analyse"
+    link = f"{link_base}/gold-price-forecast"
 
     price_txt = f"${price:,.2f}" if price is not None else "N/A"
     change_txt = f"{change_pct:+.2f}%" if change_pct is not None else "N/A"
@@ -1860,6 +1860,25 @@ def premium_feature_box() -> str:
     """
 
 
+def premium_feature_box_en() -> str:
+    return """
+    <div class="premiumbox">
+      <h3>⭐ Premium gives you more than a slightly longer note</h3>
+      <p>Get the extended report with deeper market commentary, technical levels, scenario work, more headlines and signal history.</p>
+      <div class="premiumbox-grid">
+        <div class="premiummini"><b>Extended premium report</b><br/>Clearly longer and more detailed than the free analysis.</div>
+        <div class="premiummini"><b>Signal history</b><br/>See how earlier bullish and bearish signals performed after 7 and 30 days.</div>
+        <div class="premiummini"><b>More market headlines</b><br/>The free version only shows a smaller selection.</div>
+        <div class="premiummini"><b>Archive + email alerts</b><br/>Follow signal changes and get the daily report delivered directly.</div>
+      </div>
+      <div class="premiumcta">
+        <a class="goldbtn" href="/premium">Open Premium</a>
+        <a class="ghostbtn" href="/archive">Open archive</a>
+      </div>
+    </div>
+    """
+
+
 INDEX_BODY_TEMPLATE = """
 <div class="wrap">
   <header>
@@ -1881,9 +1900,9 @@ INDEX_BODY_TEMPLATE = """
 
   <section class="grid">
     <div class="card">
-      <div class="title"><h2>Gullpris i dag</h2><div class="muted" id="updatedAt">Oppdaterer…</div></div>
+      <div class="title"><h2>__CARD_TITLE__</h2><div class="muted" id="updatedAt">__UPDATED_LOADING__</div></div>
       <div class="big" id="price">$–</div>
-      <div class="sub" id="change">–</div>
+      <div class="sub" id="change">__CHANGE_LOADING__</div>
       <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
       <p class="muted" style="margin-top:12px" id="reason">–</p>
 
@@ -1903,7 +1922,7 @@ INDEX_BODY_TEMPLATE = """
     </div>
 
     <div class="card">
-      <div class="title"><h2>Relevante nyheter</h2><div class="muted">Direkte kilder</div></div>
+      <div class="title"><h2>__HEADLINES_TITLE__</h2><div class="muted">__HEADLINES_SUB__</div></div>
       <ul id="headlines"></ul>
       <div id="premiumNewsHint" class="premiumhint" style="display:none"></div>
     </div>
@@ -1919,6 +1938,19 @@ INDEX_BODY_TEMPLATE = """
   const fmtPct = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ((Number(x)>0?"+":"") + Number(x).toFixed(2) + "%");
   const fmtPrice = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ("$" + Number(x).toLocaleString(undefined,{maximumFractionDigits:2}));
   const pillClass = (s) => (s||"").toLowerCase().includes("bull") ? "bullish" : ((s||"").toLowerCase().includes("bear") ? "bearish" : "neutral");
+  const UPDATED_LABEL = "__UPDATED_LABEL__";
+  const CHANGE_LABEL = "__CHANGE_LABEL__";
+  const PREMIUM_NEWS_HINT = "__PREMIUM_NEWS_HINT__";
+  const formatUpdatedAt = (value) => {
+    if(!value) return "–";
+    try{
+      const d = new Date(value);
+      if(Number.isNaN(d.getTime())) return value;
+      return d.toLocaleDateString("__DATE_LOCALE__", { day:"numeric", month:"long", year:"numeric" });
+    }catch(e){
+      return value;
+    }
+  };
 
   function renderHeadlines(data){
     const ul = $("headlines");
@@ -1937,7 +1969,7 @@ INDEX_BODY_TEMPLATE = """
     const hint = $("premiumNewsHint");
     if(total > freeLimit){
       hint.style.display = "";
-      hint.innerHTML = `Viser ${freeLimit} nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href="/premium">Åpne Premium</a>`;
+      hint.innerHTML = PREMIUM_NEWS_HINT.replace("__FREE_LIMIT__", String(freeLimit));
     }else{
       hint.style.display = "none";
       hint.textContent = "";
@@ -1945,9 +1977,9 @@ INDEX_BODY_TEMPLATE = """
   }
 
   function renderToday(data){
-    $("updatedAt").textContent = "Oppdatert: " + (data.updated_at || "–");
+    $("updatedAt").textContent = UPDATED_LABEL + formatUpdatedAt(data.updated_at);
     $("price").textContent = fmtPrice(data?.gold?.price_usd);
-    $("change").textContent = "Endring: " + fmtPct(data?.gold?.change_pct);
+    $("change").textContent = CHANGE_LABEL + fmtPct(data?.gold?.change_pct);
     const state = data?.signal?.state || "neutral";
     $("signalText").textContent = "Signal: " + state;
     $("signalPill").className = "pill " + pillClass(state);
@@ -2097,9 +2129,9 @@ SEO_LANDING_TEMPLATE = """
 
   <section class="grid">
     <div class="card">
-      <div class="title"><h2>Gullpris i dag</h2><div class="muted" id="updatedAt">Oppdaterer…</div></div>
+      <div class="title"><h2>__CARD_TITLE__</h2><div class="muted" id="updatedAt">__UPDATED_LOADING__</div></div>
       <div class="big" id="price">$–</div>
-      <div class="sub" id="change">–</div>
+      <div class="sub" id="change">__CHANGE_LOADING__</div>
       <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
       <p class="muted" style="margin-top:12px" id="reason">–</p>
       <p class="muted" id="macro"></p>
@@ -2115,7 +2147,7 @@ SEO_LANDING_TEMPLATE = """
     </div>
 
     <div class="card">
-      <div class="title"><h2>Relevante nyheter</h2><div class="muted">Direkte kilder</div></div>
+      <div class="title"><h2>__HEADLINES_TITLE__</h2><div class="muted">__HEADLINES_SUB__</div></div>
       <ul id="headlines"></ul>
       <div id="premiumNewsHint" class="premiumhint" style="display:none"></div>
     </div>
@@ -2131,6 +2163,19 @@ SEO_LANDING_TEMPLATE = """
   const fmtPct = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ((Number(x)>0?"+":"") + Number(x).toFixed(2) + "%");
   const fmtPrice = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ("$" + Number(x).toLocaleString(undefined,{maximumFractionDigits:2}));
   const pillClass = (s) => (s||"").toLowerCase().includes("bull") ? "bullish" : ((s||"").toLowerCase().includes("bear") ? "bearish" : "neutral");
+  const UPDATED_LABEL = "__UPDATED_LABEL__";
+  const CHANGE_LABEL = "__CHANGE_LABEL__";
+  const PREMIUM_NEWS_HINT = "__PREMIUM_NEWS_HINT__";
+  const formatUpdatedAt = (value) => {
+    if(!value) return "–";
+    try{
+      const d = new Date(value);
+      if(Number.isNaN(d.getTime())) return value;
+      return d.toLocaleDateString("__DATE_LOCALE__", { day:"numeric", month:"long", year:"numeric" });
+    }catch(e){
+      return value;
+    }
+  };
 
   function renderHeadlines(data){
     const ul = $("headlines");
@@ -2149,7 +2194,7 @@ SEO_LANDING_TEMPLATE = """
     const hint = $("premiumNewsHint");
     if(total > freeLimit){
       hint.style.display = "";
-      hint.innerHTML = `Viser ${freeLimit} nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href="/premium">Åpne Premium</a>`;
+      hint.innerHTML = PREMIUM_NEWS_HINT.replace("__FREE_LIMIT__", String(freeLimit));
     }else{
       hint.style.display = "none";
       hint.textContent = "";
@@ -2157,9 +2202,9 @@ SEO_LANDING_TEMPLATE = """
   }
 
   function renderToday(data){
-    $("updatedAt").textContent = "Oppdatert: " + (data.updated_at || "–");
+    $("updatedAt").textContent = UPDATED_LABEL + formatUpdatedAt(data.updated_at);
     $("price").textContent = fmtPrice(data?.gold?.price_usd);
-    $("change").textContent = "Endring: " + fmtPct(data?.gold?.change_pct);
+    $("change").textContent = CHANGE_LABEL + fmtPct(data?.gold?.change_pct);
     const state = data?.signal?.state || "neutral";
     $("signalText").textContent = "Signal: " + state;
     $("signalPill").className = "pill " + pillClass(state);
@@ -2273,6 +2318,19 @@ ARCHIVE_BODY_INNER = """
   const $ = (id) => document.getElementById(id);
 
   const pillClass = (s) => (s||"").toLowerCase().includes("bull") ? "bullish" : ((s||"").toLowerCase().includes("bear") ? "bearish" : "neutral");
+  const UPDATED_LABEL = "__UPDATED_LABEL__";
+  const CHANGE_LABEL = "__CHANGE_LABEL__";
+  const PREMIUM_NEWS_HINT = "__PREMIUM_NEWS_HINT__";
+  const formatUpdatedAt = (value) => {
+    if(!value) return "–";
+    try{
+      const d = new Date(value);
+      if(Number.isNaN(d.getTime())) return value;
+      return d.toLocaleDateString("__DATE_LOCALE__", { day:"numeric", month:"long", year:"numeric" });
+    }catch(e){
+      return value;
+    }
+  };
   const fmtPct = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ((Number(x)>0?"+":"") + Number(x).toFixed(2) + "%");
   const fmtPrice = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ("$" + Number(x).toLocaleString(undefined,{maximumFractionDigits:2}));
 
@@ -2477,9 +2535,11 @@ LEGAL_PAGE_TEMPLATE = """
 """
 
 
-def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, intro: str, mode: str, nav_active: str) -> HTMLResponse:
+def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, intro: str, mode: str, nav_active: str, lang: str = "no") -> HTMLResponse:
     initial_payload = get_public_today_payload(mode)
 
+    is_en = lang == "en"
+    premium_box_html = premium_feature_box_en() if is_en else premium_feature_box()
     body = _replace_many(
         SEO_LANDING_TEMPLATE,
         {
@@ -2490,7 +2550,16 @@ def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, int
             "__MODE__": _escape_html(mode),
             "__NAV_TABS__": nav_tabs(nav_active),
             "__INITIAL_JSON__": json_for_html(initial_payload),
-            "__PREMIUM_BOX__": premium_feature_box(),
+            "__PREMIUM_BOX__": premium_box_html,
+            "__CARD_TITLE__": "Gold price today" if is_en else "Gullpris i dag",
+            "__UPDATED_LOADING__": "Updating…" if is_en else "Oppdaterer…",
+            "__CHANGE_LOADING__": "Change: –" if is_en else "Endring: –",
+            "__UPDATED_LABEL__": "Updated: " if is_en else "Oppdatert: ",
+            "__CHANGE_LABEL__": "Change: " if is_en else "Endring: ",
+            "__DATE_LOCALE__": "en-US" if is_en else "nb-NO",
+            "__HEADLINES_TITLE__": "Relevant headlines" if is_en else "Relevante nyheter",
+            "__HEADLINES_SUB__": "Direct sources" if is_en else "Direkte kilder",
+            "__PREMIUM_NEWS_HINT__": "Showing __FREE_LIMIT__ recent articles. Premium gives access to more market headlines, the longer report and the archive. <a href=\"/premium\">Open Premium</a>" if is_en else "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=\"/premium\">Åpne Premium</a>",
         },
     )
     return HTMLResponse(html_shell(request, title=title, description=desc, path=path, body_html=body))
@@ -2763,9 +2832,10 @@ def page_gold_price_forecast(request: Request) -> HTMLResponse:
         title="Gold Price Forecast | XAUUSD outlook and daily scenario",
         desc="Daily gold price forecast for XAUUSD based on trend, signal and macro drivers such as USD, rates and geopolitics.",
         h1="Gold Price Forecast – Short Term Outlook for XAUUSD",
-        intro="Daily gold price forecast for the next 24–72 hours based on trend, signal, technical levels and macro developments.",
+        intro="Daily gold price forecast for the next 24–72 hours based on trend, signal, technical levels and macro developments. See also Gullpris i dag for the main Norwegian overview.",
         mode="forecast",
         nav_active="gold_forecast",
+        lang="en",
     )
 
 
