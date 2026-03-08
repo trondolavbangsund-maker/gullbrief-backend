@@ -1766,6 +1766,7 @@ def html_shell(
     path: str,
     body_html: str,
     article_date: Optional[str] = None,
+    lang: str = "no",
 ) -> str:
     base = get_base_url(request)
     canonical = f"{base}{path}"
@@ -1789,7 +1790,7 @@ def html_shell(
         f'<link rel="alternate" type="application/rss+xml" title="{_escape_html(APP_NAME)} feed" href="{base}/feed.xml" />'
         f'<meta name="google-site-verification" content="{_escape_html(GOOGLE_SITE_VERIFICATION_CONTENT)}" />'
         f'<meta property="og:site_name" content="{_escape_html(APP_NAME)}" />'
-        '<meta property="og:locale" content="nb_NO" />'
+        f'<meta property="og:locale" content="{"en_US" if lang == "en" else "nb_NO"}" />'
         '<meta property="og:type" content="website" />'
         f'<meta property="og:title" content="{_escape_html(title)}" />'
         f'<meta property="og:description" content="{_escape_html(description)}" />'
@@ -1807,7 +1808,7 @@ def html_shell(
 
     return (
         "<!doctype html>"
-        '<html lang="no"><head>'
+        f'<html lang="{lang}"><head>'
         + head
         + COMMON_STYLE
         + "</head><body>"
@@ -2559,10 +2560,10 @@ def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, int
             "__DATE_LOCALE__": "en-US" if is_en else "nb-NO",
             "__HEADLINES_TITLE__": "Relevant headlines" if is_en else "Relevante nyheter",
             "__HEADLINES_SUB__": "Direct sources" if is_en else "Direkte kilder",
-            "__PREMIUM_NEWS_HINT__": "Showing __FREE_LIMIT__ recent articles. Premium gives access to more market headlines, the longer report and the archive. <a href=\"/premium\">Open Premium</a>" if is_en else "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=\"/premium\">Åpne Premium</a>",
+            "__PREMIUM_NEWS_HINT__": "Showing __FREE_LIMIT__ recent articles. Premium gives access to more market headlines, the longer report and the archive. <a href=&quot;/premium&quot;>Open Premium</a>" if is_en else "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=&quot;/premium&quot;>Åpne Premium</a>",
         },
     )
-    return HTMLResponse(html_shell(request, title=title, description=desc, path=path, body_html=body))
+    return HTMLResponse(html_shell(request, title=title, description=desc, path=path, body_html=body, lang=lang))
 
 
 def legal_page(request: Request, path: str, title: str, intro: str, content_html: str) -> HTMLResponse:
@@ -2613,7 +2614,7 @@ def index(request: Request) -> HTMLResponse:
             "__DATE_LOCALE__": "nb-NO",
             "__HEADLINES_TITLE__": "Relevante nyheter",
             "__HEADLINES_SUB__": "Direkte kilder",
-            "__PREMIUM_NEWS_HINT__": "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=\"/premium\">Åpne Premium</a>",
+            "__PREMIUM_NEWS_HINT__": "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=&quot;/premium&quot;>Åpne Premium</a>",
         },
     )
     return HTMLResponse(html_shell(request, title=title, description=desc, path="/", body_html=body))
