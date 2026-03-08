@@ -890,7 +890,7 @@ def summarize_bundle_with_openai(
     trend_score: Optional[int],
     levels: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
-    out = {"analysis": "", "forecast": "", "xauusd": "", "premium": ""}
+    out = {"analysis": "", "forecast": "", "forecast_en": "", "xauusd": "", "premium": ""}
 
     if not OPENAI_API_KEY or not headlines:
         return out
@@ -971,7 +971,7 @@ def summarize_bundle_with_openai(
 
         data = json.loads(txt)
 
-        for k in ("analysis", "forecast", "xauusd", "premium"):
+        for k in ("analysis", "forecast", "forecast_en", "xauusd", "premium"):
             v = data.get(k)
             if isinstance(v, str):
                 out[k] = v.strip()
@@ -1111,6 +1111,7 @@ def build_brief() -> Dict[str, Any]:
 
     analysis_text = (bundle.get("analysis") or "").strip() or fallback
     forecast_text = (bundle.get("forecast") or "").strip() or fallback
+    forecast_en_text = (bundle.get("forecast_en") or "").strip() or fallback
     xauusd_text = (bundle.get("xauusd") or "").strip() or fallback
     premium_insight = (bundle.get("premium") or "").strip()
 
@@ -1129,6 +1130,7 @@ def build_brief() -> Dict[str, Any]:
         "macro_summary": analysis_text,
         "analysis": analysis_text,
         "forecast": forecast_text,
+        "forecast_en": forecast_en_text,
         "xauusd": xauusd_text,
         "premium_insight": premium_insight,
         "headlines": headlines,
@@ -1170,11 +1172,13 @@ def get_public_brief(force_build: bool = False) -> Dict[str, Any]:
 
 def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[str, Any]:
     mode = (mode or "analysis").strip().lower()
-    if mode not in ("analysis", "forecast", "xauusd"):
+    if mode not in ("analysis", "forecast", "forecast_en", "xauusd"):
         mode = "analysis"
 
     if mode == "forecast":
         summary = data.get("forecast") or data.get("macro_summary") or ""
+    elif mode == "forecast_en":
+        summary = data.get("forecast_en") or data.get("forecast") or data.get("macro_summary") or ""
     elif mode == "xauusd":
         summary = data.get("xauusd") or data.get("macro_summary") or ""
     else:
@@ -2536,10 +2540,24 @@ LEGAL_PAGE_TEMPLATE = """
 """
 
 
+def translate_signal_reason_to_english(reason: str) -> str:
+    r = (reason or "").strip()
+    mapping = {
+        "Pris over SMA20 og SMA50, med positiv trend.": "Price above SMA20 and SMA50, with a positive trend.",
+        "Pris under SMA20 og SMA50, med negativ trend.": "Price below SMA20 and SMA50, with a negative trend.",
+        "Blandet bilde mellom pris og glidende snitt.": "Mixed picture between price and moving averages.",
+        "For lite historikk til SMA20/SMA50. Setter nøytral.": "Too little history for SMA20/SMA50. Setting neutral.",
+        "Kunne ikke beregne glidende snitt.": "Could not calculate moving averages.",
+    }
+    return mapping.get(r, r)
+
+
 def seo_landing(request: Request, path: str, title: str, desc: str, h1: str, intro: str, mode: str, nav_active: str, lang: str = "no") -> HTMLResponse:
     initial_payload = get_public_today_payload(mode)
 
     is_en = lang == "en"
+    if is_en and isinstance(initial_payload.get("signal"), dict):
+        initial_payload["signal"]["reason_short"] = translate_signal_reason_to_english(str(initial_payload["signal"].get("reason_short") or ""))
     premium_box_html = premium_feature_box_en() if is_en else premium_feature_box()
     body = _replace_many(
         SEO_LANDING_TEMPLATE,
@@ -2843,7 +2861,7 @@ def page_gold_price_forecast(request: Request) -> HTMLResponse:
         desc="Daily gold price forecast for XAUUSD based on trend, signal and macro drivers such as USD, rates and geopolitics.",
         h1="Gold Price Forecast – Short Term Outlook for XAUUSD",
         intro="Daily gold price forecast for the next 24–72 hours based on trend, signal, technical levels and macro developments. See also Gullpris i dag for the main Norwegian overview.",
-        mode="forecast",
+        mode="forecast_en",
         nav_active="gold_forecast",
         lang="en",
     )
