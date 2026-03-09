@@ -1073,6 +1073,43 @@ def premium_report_ai_from_bundle(
     )
 
 
+def fallback_analysis_text(signal_state: str) -> str:
+    if signal_state == "bullish":
+        return """Gullprisen holder seg i en positiv trend etter å ha etablert støtte over sentrale tekniske nivåer. Markedet støttes av etterspørsel etter sikre aktiva og et fortsatt usikkert makrobilde.
+
+På kort sikt styres utviklingen særlig av renter, USD og nyhetsbildet. Dersom gull holder seg over støttenivåer kan markedet forsøke et nytt løft mot neste tekniske motstand.
+
+Så lenge prisen ligger over viktige glidende gjennomsnitt vurderes den kortsiktige trenden fortsatt som moderat bullish."""
+
+    if signal_state == "bearish":
+        return """Gullprisen viser et svakere teknisk bilde etter å ha falt under viktige nivåer. Det bearish signalet reflekterer press fra renter, dollar og et mindre støttende makrobilde.
+
+Videre utvikling vil i stor grad avhenge av makrotall fra USA og renteutviklingen. Dersom støttenivåer brytes kan markedet gå inn i en periode med svakere utvikling eller konsolidering."""
+
+    return """Gullprisen beveger seg i et mer blandet kortsiktig bilde der markedet veier teknisk støtte mot makrodrivere som renter og dollar.
+
+Uten et tydelig brudd opp eller ned er det mest sannsynlige scenarioet videre konsolidering mens markedet venter på nye makroimpulser."""
+
+
+def fallback_forecast_text(signal_state: str, price_usd):
+    price_txt = f"{price_usd:.0f} USD" if isinstance(price_usd, (int, float)) else "dagens nivå"
+
+    return f"""De neste 24–72 timene ventes gull å handle rundt {price_txt}. Basisscenarioet er videre konsolidering mens markedet reagerer på renter, USD og geopolitikk.
+
+Et bullscenario kan oppstå dersom renter faller eller safe-haven-etterspørselen øker, mens et bearscenario kan oppstå dersom dollaren styrker seg og realrentene stiger."""
+
+
+def fallback_forecast_en_text(signal_state: str, price_usd):
+    price_txt = f"${price_usd:,.0f}" if isinstance(price_usd, (int, float)) else "current levels"
+    return f"""Gold is trading around {price_txt} in a mixed short-term environment as investors weigh macro data, yields and geopolitical headlines.
+
+The most likely near-term scenario is continued consolidation unless a stronger macro catalyst moves the market."""
+
+
+def fallback_xauusd_text(signal_state: str):
+    return ("Spot gold remains highly sensitive to movements in the US dollar, Treasury yields and global risk sentiment. Changes in real yields or the dollar index can quickly shift short‑term momentum in XAUUSD.")
+
+
 # =============================================================================
 # Cache + brief
 # =============================================================================
@@ -1109,10 +1146,10 @@ def build_brief() -> Dict[str, Any]:
 
     fallback = (" | ".join([h["title"] for h in headlines[:3] if h.get("title")]) or "Ingen nyheter tilgjengelig akkurat nå.")
 
-    analysis_text = (bundle.get("analysis") or "").strip() or fallback
-    forecast_text = (bundle.get("forecast") or "").strip() or fallback
-    forecast_en_text = (bundle.get("forecast_en") or "").strip() or fallback
-    xauusd_text = (bundle.get("xauusd") or "").strip() or fallback
+    analysis_text = (bundle.get("analysis") or "").strip() or fallback_analysis_text(signal_state)
+    forecast_text = (bundle.get("forecast") or "").strip() or fallback_forecast_text(signal_state, yp.last)
+    forecast_en_text = (bundle.get("forecast_en") or "").strip() or fallback_forecast_en_text(signal_state, yp.last)
+    xauusd_text = (bundle.get("xauusd") or "").strip() or fallback_xauusd_text(signal_state)
     premium_insight = (bundle.get("premium") or "").strip()
 
     return {
