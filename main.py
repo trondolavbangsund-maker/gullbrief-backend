@@ -2743,6 +2743,8 @@ def key_fallback_box(is_en: bool = False) -> str:
     desc = "You can paste your premium key here." if is_en else "Du kan lime inn premium-nøkkelen din her."
     placeholder = "Premium key" if is_en else "Premium-nøkkel"
     button = "Save key" if is_en else "Lagre nøkkel"
+    saved = "Saved" if is_en else "Lagret"
+    error = "Error" if is_en else "Feil"
 
     return f"""
 <div class="keypastebox">
@@ -2750,10 +2752,36 @@ def key_fallback_box(is_en: bool = False) -> str:
     <p class="muted" style="margin:0 0 10px">{desc}</p>
 
     <div class="btnrow">
-        <input id="globalPremiumKey" placeholder="{placeholder}" autocomplete="off" />
-        <button>{button}</button>
+        <input id="key" placeholder="{placeholder}" autocomplete="off" />
+        <button id="btnSave">{button}</button>
     </div>
 </div>
+
+<script>
+(function(){{
+  const LS_KEY = "gullbrief_premium_key";
+  const key = document.getElementById("key");
+  const btn = document.getElementById("btnSave");
+
+  if(key){{
+    try{{
+      key.value = localStorage.getItem(LS_KEY) || "";
+    }}catch(e){{}}
+  }}
+
+  if(btn && key){{
+    btn.onclick = function(){{
+      try{{
+        localStorage.setItem(LS_KEY, key.value.trim());
+        btn.innerText = "{saved}";
+        setTimeout(()=>{{ btn.innerText = "{button}"; }}, 1000);
+      }}catch(e){{
+        btn.innerText = "{error}";
+      }}
+    }}
+  }}
+}})();
+</script>
 """
 
 
@@ -4046,16 +4074,37 @@ def premium_page(request: Request, session_token: Optional[str] = Cookie(default
 
     extra_top = ""
     if auth["authenticated"] and auth["premium_active"]:
-        extra_top = f"""
+        latest = None
+        history_rows = read_history(limit=1)
+        if history_rows:
+            latest = history_rows[-1]
+        if not latest:
+            latest = read_public_snapshot()
+
+        premium_report = ""
+        if latest:
+            premium_report = str(latest.get("premium_report") or "").strip()
+
+        premium_report_html = ""
+        if premium_report:
+            premium_report_html = f"""
         <div class="card" style="margin-bottom:16px">
-          <div class="title"><h2>Innlogget</h2><div class="muted">Magic link</div></div>
-          <p class="muted">Innlogget som <b>{_escape_html(str(auth.get("email") or ""))}</b>.</p>
-          <div class="btnrow">
-            <button onclick="location.href='/archive'">Åpne arkiv</button>
-            <button onclick="location.href='/auth/logout'">Logg ut</button>
-          </div>
+          <div class="title"><h2>Dagens premium-rapport</h2><div class="muted">Live</div></div>
+          <pre>{_escape_html(premium_report)}</pre>
         </div>
         """
+
+        extra_top = f"""
+    <div class="card" style="margin-bottom:16px">
+      <div class="title"><h2>Innlogget</h2><div class="muted">Magic link</div></div>
+      <p class="muted">Innlogget som <b>{_escape_html(str(auth.get("email") or ""))}</b>.</p>
+      <div class="btnrow">
+        <button onclick="location.href='/archive'">Åpne arkiv</button>
+        <button onclick="location.href='/auth/logout'">Logg ut</button>
+      </div>
+    </div>
+    {premium_report_html}
+    """
 
     body = _replace_many(
         PREMIUM_BODY_TEMPLATE,
@@ -4068,6 +4117,7 @@ def premium_page(request: Request, session_token: Optional[str] = Cookie(default
             "__LATEST_NEWS__": latest_news_html,
         },
     )
+
     body = body.replace('<section class="grid">', extra_top + '<section class="grid">', 1)
 
     return HTMLResponse(html_shell(request, title=title, description=desc, path="/premium", body_html=body))
@@ -4654,6 +4704,99 @@ async def api_subscribe_email(
 
     return JSONResponse({"ok": True, "email": email})
 
+
+@app.post("/api/tasks/send-premium-daily")
+def api_send_premium_daily(
+    request: Request,
+    x_api_key: Optional[str] = Header(default=None),
+):
+    if x_api_key != "gb_test_12345":
+        return JSONResponse({"message": "UNAUTHORIZED"}, status_code=401)
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    base = get_base_url(request)
+
+    latest = None
+    rows = read_history(limit=1)
+    if rows:
+        latest = rows[-1]
+    if not latest:
+        latest = read_public_snapshot() or {}
+
+    price_usd = safe_float(latest.get("price_usd"))
+    change_pct = safe_float(latest.get("change_pct"))
+    signal = str(latest.get("signal") or "neutral").upper()
+
+    price_txt = f"${price_usd:,.2f}" if price_usd is not None else "ukjent"
+    chg_txt = f"{change_pct:+.2f}%" if change_pct is not None else "ukjent"
+
+    subject = f"{APP_NAME} Premium – dagens rapport er klar"
+    body = (
+        f"Hei!\n\n"
+        f"Dagens premium-rapport er nå publisert.\n\n"
+        f"Gull: {price_txt}\n"
+        f"Døgnendring: {chg_txt}\n"
+        f"Signal: {signal}\n\n"
+        f"Åpne rapporten her:\n"
+        f"{base}/premium\n\n"
+        f"Hvis du ikke er innlogget, kan du be om magic link på premium-siden.\n\n"
+        f"Hilsen\n"
+        f"{APP_NAME}"
+    )
+
+    conn = _db()
+    sent = 0
+    skipped = 0
+    errors = []
+
+    try:
+        subs = conn.execute(
+            "SELECT email, last_daily_sent_date FROM email_subscriptions ORDER BY created_at DESC"
+        ).fetchall()
+
+        for row in subs:
+            email = normalize_email(str(row["email"] or ""))
+            last_sent = str(row["last_daily_sent_date"] or "")
+
+            if "@" not in email:
+                skipped += 1
+                continue
+
+            if last_sent == today:
+                skipped += 1
+                continue
+
+            if not email_has_active_premium(email):
+                skipped += 1
+                continue
+
+            try:
+                send_email(email, subject, body)
+                conn.execute(
+                    "UPDATE email_subscriptions SET last_daily_sent_date=? WHERE email=?",
+                    (today, email),
+                )
+                sent += 1
+            except Exception as e:
+                errors.append({"email": email, "message": str(e)})
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "date": today,
+            "sent": sent,
+            "skipped": skipped,
+            "errors": errors[:10],
+        }
+    )
+
+
+# =============================================================================
+# Social API
 
 # =============================================================================
 # Social API
