@@ -1656,7 +1656,7 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
     elif mode == "forecast_en":
         summary = data.get("forecast_en") or data.get("forecast") or data.get("macro_summary") or ""
     elif mode == "xauusd":
-        summary = data.get("xauusd") or data.get("analysis") or data.get("macro_summary") or ""
+        summary = data.get("analysis") or data.get("macro_summary") or ""
     elif mode == "signal":
         signal_state = str(data.get("signal") or "neutral").upper()
 
@@ -1688,6 +1688,10 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
         "headlines_total": len(data.get("headlines") or []),
         "headlines_free_limit": FREE_HEADLINES_LIMIT,
     }
+    
+def get_public_today_payload(mode: str = "analysis") -> Dict[str, Any]:
+    data = get_public_brief(force_build=False)
+    return map_to_public_today(data, mode)
 
 # =============================================================================
 # History
@@ -2898,8 +2902,10 @@ __FOOTER__
   $("btnReload").addEventListener("click", loadToday);
 
   if(!renderInitial()){
-    loadToday();
-  }
+  loadToday();
+} else {
+  setTimeout(loadToday, 500);
+}
 </script>
 """
 
@@ -3499,11 +3505,11 @@ def seo_landing(
 
             "__PREMIUM_NEWS_HINT__": (
                 "Showing __FREE_LIMIT__ recent articles. Premium gives access to more market headlines, the longer report and the archive. "
-                "<a href=\"/premium\">Open Premium</a>"
+                "<a href=&quot;/premium&quot;>Open Premium</a>"
                 if is_en
                 else
                 "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. "
-                "<a href=\"/premium\">Åpne Premium</a>"
+                "<a href=&quot;/premium&quot;>Åpne Premium</a>"
             ),
         },
     )
