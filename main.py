@@ -1648,7 +1648,7 @@ def get_public_brief(force_build: bool = False) -> Dict[str, Any]:
 
 def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[str, Any]:
     mode = (mode or "analysis").strip().lower()
-    if mode not in ("analysis", "forecast", "forecast_en", "xauusd"):
+    if mode not in ("analysis", "forecast", "forecast_en", "xauusd", "signal"):
         mode = "analysis"
 
     if mode == "forecast":
@@ -1656,21 +1656,31 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
     elif mode == "forecast_en":
         summary = data.get("forecast_en") or data.get("forecast") or data.get("macro_summary") or ""
     elif mode == "xauusd":
-        summary = data.get("analysis_no") or data.get("analysis") or data.get("macro_summary") or ""
+        summary = data.get("xauusd") or data.get("analysis") or data.get("macro_summary") or ""
+    elif mode == "signal":
+        summary = data.get("signal_reason") or data.get("analysis") or data.get("macro_summary") or ""
     else:
-        summary = data.get("analysis_no") or data.get("analysis") or data.get("macro_summary") or ""
+        summary = data.get("analysis") or data.get("macro_summary") or ""
 
     return {
         "updated_at": data.get("updated_at") or iso_now(),
         "version": data.get("version", APP_VERSION),
-        "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
-        "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
-        "macro": {"mode": mode, "summary_short": summary},
+        "gold": {
+            "price_usd": data.get("price_usd"),
+            "change_pct": data.get("change_pct"),
+        },
+        "signal": {
+            "state": data.get("signal", "neutral"),
+            "reason_short": data.get("signal_reason", ""),
+        },
+        "macro": {
+            "mode": mode,
+            "summary_short": summary,
+        },
         "headlines": (data.get("headlines") or [])[:FREE_HEADLINES_LIMIT],
         "headlines_total": len(data.get("headlines") or []),
         "headlines_free_limit": FREE_HEADLINES_LIMIT,
     }
-
 
 def get_public_today_payload(mode: str = "analysis") -> Dict[str, Any]:
     data = get_public_brief(force_build=False)
