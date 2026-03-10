@@ -1659,12 +1659,13 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
         summary = data.get("xauusd") or data.get("analysis") or data.get("macro_summary") or ""
     elif mode == "signal":
         signal_state = str(data.get("signal") or "neutral").upper()
-        signal_reason = str(data.get("signal_reason") or "").strip()
 
-        if signal_reason:
-            summary = f"Dagens signal er {signal_state}. {signal_reason}"
+        if signal_state == "BULLISH":
+            summary = "Dagens signal er BULLISH. Gullprisen ligger i en positiv teknisk struktur der prisbildet støttes av trend og glidende snitt."
+        elif signal_state == "BEARISH":
+            summary = "Dagens signal er BEARISH. Gullprisen viser et svakere teknisk bilde med press på trend og glidende snitt."
         else:
-            summary = f"Dagens signal er {signal_state}. Signalbildet bygger på forholdet mellom pris, trend og glidende snitt."
+            summary = "Dagens signal er NEUTRAL. Markedet viser et blandet bilde uten et tydelig bullish eller bearish overtak akkurat nå."
     else:
         summary = data.get("analysis") or data.get("macro_summary") or ""
 
@@ -1687,10 +1688,6 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
         "headlines_total": len(data.get("headlines") or []),
         "headlines_free_limit": FREE_HEADLINES_LIMIT,
     }
-
-def get_public_today_payload(mode: str = "analysis") -> Dict[str, Any]:
-    data = get_public_brief(force_build=False)
-    return map_to_public_today(data, mode)
 
 # =============================================================================
 # History
@@ -2680,14 +2677,20 @@ def render_recent_articles_box(lang: str, exclude_slug: Optional[str] = None) ->
         )
 
     return f"""
-    <section class="grid" style="grid-template-columns:1fr">
-      <div class="card">
-        <div class="title"><h2>{title}</h2><div class="muted">{len(articles)} {count_label}</div></div>
-        <ul>{''.join(items)}</ul>
-      </div>
+    <section class="card" style="margin-top:16px">
+      <div class="title"><h2>{title}</h2><div class="muted">{len(articles)} {count_label}</div></div>
+      <ul>{''.join(items)}</ul>
     </section>
     """
-
+def ensure_news_seeded() -> None:
+    articles = get_news_articles()
+    if articles:
+        return
+    try:
+        if NEWS_DAILY_ENABLED:
+            generate_and_store_daily_news()
+    except Exception:
+        pass
 
 def get_latest_articles(limit: int = 3, lang: str = "no") -> List[Dict[str, Any]]:
     articles = get_recent_news_articles(lang=lang, limit=limit)
@@ -2695,7 +2698,6 @@ def get_latest_articles(limit: int = 3, lang: str = "no") -> List[Dict[str, Any]
     for article in articles:
         out.append({"date": str(article.get("date") or ""), "title": str(article.get("title") or ""), "url": str(article.get("path") or "#")})
     return out
-
 
 def auth_login_box(next_url: str = "/archive", sent: bool = False, email: str = "", is_en: bool = False) -> str:
     sent_html = ""
@@ -3442,16 +3444,32 @@ def seo_landing(
     sent_magic_link: bool = False,
     sent_email: str = "",
 ) -> HTMLResponse:
+
+    # sørg for at artikler finnes
+    ensure_news_seeded()
+
     initial_payload = get_public_today_payload(mode)
 
     is_en = lang == "en"
+    articles_lang = "en" if mode == "forecast_en" else "no"
+
     if is_en and isinstance(initial_payload.get("signal"), dict):
-        initial_payload["signal"]["reason_short"] = translate_signal_reason_to_english(str(initial_payload["signal"].get("reason_short") or ""))
+        initial_payload["signal"]["reason_short"] = translate_signal_reason_to_english(
+            str(initial_payload["signal"].get("reason_short") or "")
+        )
 
     premium_box_html = premium_feature_box_en() if is_en else premium_feature_box()
-    auth_box_html = auth_login_box(next_url=path, sent=sent_magic_link, email=sent_email, is_en=is_en)
+
+    auth_box_html = auth_login_box(
+        next_url=path,
+        sent=sent_magic_link,
+        email=sent_email,
+        is_en=is_en
+    )
+
     key_box_html = key_fallback_box(is_en=is_en)
-    latest_news_html = render_recent_articles_box("en" if is_en else "no")
+
+    latest_news_html = render_recent_articles_box(articles_lang)
 
     body = _replace_many(
         SEO_LANDING_TEMPLATE,
@@ -3462,28 +3480,44 @@ def seo_landing(
             "__FOOTER__": footer_links(is_en=is_en),
             "__MODE__": _escape_html(mode),
             "__NAV_TABS__": nav_tabs(nav_active),
-            "__INITIAL_JSON__": json_for_html(initial_payload),
+            "__INITIAL_JSON__": _json_for_html(initial_payload),
             "__PREMIUM_BOX__": premium_box_html,
             "__AUTH_BOX__": auth_box_html,
             "__KEY_BOX__": key_box_html,
             "__SEO_TEXT__": seo_text_html,
             "__LATEST_NEWS__": latest_news_html,
+
             "__CARD_TITLE__": "Gold price today" if is_en else "Gullpris i dag",
             "__UPDATED_LOADING__": "Updating…" if is_en else "Oppdaterer…",
-            "__CHANGE_LOADING__": "Change: –" if is_en else "Endring: –",
-            "__UPDATED_LABEL__": "Updated: " if is_en else "Oppdatert: ",
-            "__CHANGE_LABEL__": "Change: " if is_en else "Endring: ",
+            "__CHANGE_LOADING__": "Change:" if is_en else "Endring:",
+            "__UPDATED_LABEL__": "Updated:" if is_en else "Oppdatert:",
+            "__CHANGE_LABEL__": "Change:" if is_en else "Endring:",
             "__DATE_LOCALE__": "en-US" if is_en else "nb-NO",
+
             "__HEADLINES_TITLE__": "Relevant headlines" if is_en else "Relevante nyheter",
             "__HEADLINES_SUB__": "Direct sources" if is_en else "Direkte kilder",
+
             "__PREMIUM_NEWS_HINT__": (
-                "Showing __FREE_LIMIT__ recent articles. Premium gives access to more market headlines, the longer report and the archive. <a href=&quot;/premium&quot;>Open Premium</a>"
+                "Showing __FREE_LIMIT__ recent articles. Premium gives access to more market headlines, the longer report and the archive. "
+                "<a href=\"/premium\">Open Premium</a>"
                 if is_en
-                else "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=&quot;/premium&quot;>Åpne Premium</a>"
+                else
+                "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. "
+                "<a href=\"/premium\">Åpne Premium</a>"
             ),
         },
     )
-    return HTMLResponse(html_shell(request, title=title, description=desc, path=path, body_html=body, lang=lang))
+
+    return HTMLResponse(
+        html_shell(
+            request,
+            title=title,
+            description=desc,
+            path=path,
+            body_html=body,
+            lang=lang,
+        )
+    )
 
 
 def legal_page(request: Request, path: str, title: str, intro: str, content_html: str) -> HTMLResponse:
