@@ -3477,7 +3477,7 @@ def seo_landing(
             "__APP_NAME__": _escape_html(APP_NAME),
             "__H1__": _escape_html(h1),
             "__INTRO__": _escape_html(intro),
-            "__FOOTER__": footer_links(is_en=is_en),
+            "__FOOTER__": footer_links(),
             "__MODE__": _escape_html(mode),
             "__NAV_TABS__": nav_tabs(nav_active),
             "__INITIAL_JSON__": json_for_html(initial_payload),
