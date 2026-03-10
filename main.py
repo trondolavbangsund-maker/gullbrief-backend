@@ -3480,7 +3480,7 @@ def seo_landing(
             "__FOOTER__": footer_links(is_en=is_en),
             "__MODE__": _escape_html(mode),
             "__NAV_TABS__": nav_tabs(nav_active),
-            "__INITIAL_JSON__": _json_for_html(initial_payload),
+            "__INITIAL_JSON__": json_for_html(initial_payload),
             "__PREMIUM_BOX__": premium_box_html,
             "__AUTH_BOX__": auth_box_html,
             "__KEY_BOX__": key_box_html,
