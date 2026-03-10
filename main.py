@@ -27,11 +27,10 @@ from fastapi.staticfiles import StaticFiles
 
 
 # =============================================================================
-# Gullbrief main.py – v4.2
-# - Basert direkte på fungerende v4.1
-# - Bevarer eksisterende snapshot/history/signal/Stripe/X/logikk så langt det lar seg gjøre
-# - Legger til magic-link login, key fallback, nyhetsmotor, /news /nyheter,
-#   Google News-støtte, SEO-patch på /gullpris og klikkbar logo
+# Gullbrief main.py – v4.3
+# - Bevarer eksisterende snapshot/history/signal/Stripe/X/logikk
+# - Fikser språk på engelsk side, datoformat, nyere artikkelboks og key-boks styling
+# - Bruker nyhetsmotoren som kilde for "siste artikler"
 # =============================================================================
 
 
@@ -40,7 +39,7 @@ from fastapi.staticfiles import StaticFiles
 # =============================================================================
 
 APP_NAME = os.getenv("APP_NAME", "Gullbrief").strip()
-APP_VERSION = "4.2"
+APP_VERSION = "4.3"
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip()
@@ -200,6 +199,7 @@ app.add_middleware(
 
 try:
     from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware  # type: ignore
+
     app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 except Exception:
     pass
@@ -250,7 +250,7 @@ def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: i
 
 def http_get_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> str:
     h = headers or {}
-    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/4.2)")
+    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/4.3)")
     h.setdefault("Accept", "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1")
     r = requests.get(url, headers=h, timeout=timeout, allow_redirects=True)
     r.raise_for_status()
@@ -383,11 +383,7 @@ def write_news_store(data: Dict[str, Any]) -> None:
 
 
 def json_for_html(data: Dict[str, Any]) -> str:
-    return (
-        json.dumps(data, ensure_ascii=False)
-        .replace("</", "<\\/")
-        .replace("<!--", "<\\!--")
-    )
+    return json.dumps(data, ensure_ascii=False).replace("</", "<\\/").replace("<!--", "<\\!--")
 
 
 def normalize_email(email: str) -> str:
@@ -528,11 +524,7 @@ def _oauth1_header(
         return quote(str(v), safe="~-._")
 
     param_string = "&".join(f"{enc(k)}={enc(v)}" for k, v in sorted(oauth_params.items()))
-    base_string = "&".join([
-        method.upper(),
-        enc(url),
-        enc(param_string),
-    ])
+    base_string = "&".join([method.upper(), enc(url), enc(param_string)])
 
     signing_key = f"{enc(consumer_secret)}&{enc(token_secret)}"
     digest = hmac.new(signing_key.encode("utf-8"), base_string.encode("utf-8"), hashlib.sha1).digest()
@@ -540,9 +532,7 @@ def _oauth1_header(
 
     oauth_params["oauth_signature"] = signature
 
-    header = "OAuth " + ", ".join(
-        f'{enc(k)}="{enc(v)}"' for k, v in sorted(oauth_params.items())
-    )
+    header = "OAuth " + ", ".join(f'{enc(k)}="{enc(v)}"' for k, v in sorted(oauth_params.items()))
     return header
 
 
@@ -569,10 +559,7 @@ def send_social_post(text: str) -> Dict[str, Any]:
 
         r = requests.post(
             url,
-            headers={
-                "Authorization": auth_header,
-                "Content-Type": "application/json",
-            },
+            headers={"Authorization": auth_header, "Content-Type": "application/json"},
             json={"text": text},
             timeout=20,
         )
@@ -656,7 +643,8 @@ def init_db() -> None:
     conn = _db()
     cur = conn.cursor()
 
-    cur.execute("""
+    cur.execute(
+        """
       CREATE TABLE IF NOT EXISTS api_keys (
         api_key TEXT PRIMARY KEY,
         email TEXT,
@@ -665,9 +653,11 @@ def init_db() -> None:
         stripe_customer_id TEXT,
         stripe_subscription_id TEXT
       )
-    """)
+    """
+    )
 
-    cur.execute("""
+    cur.execute(
+        """
       CREATE TABLE IF NOT EXISTS email_subscriptions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         api_key TEXT NOT NULL,
@@ -678,17 +668,21 @@ def init_db() -> None:
         last_macro_sent_date TEXT,
         UNIQUE(api_key, email)
       )
-    """)
+    """
+    )
 
-    cur.execute("""
+    cur.execute(
+        """
       CREATE TABLE IF NOT EXISTS stripe_events (
         event_id TEXT PRIMARY KEY,
         event_type TEXT,
         created_at TEXT NOT NULL
       )
-    """)
+    """
+    )
 
-    cur.execute("""
+    cur.execute(
+        """
       CREATE TABLE IF NOT EXISTS users (
         email TEXT PRIMARY KEY,
         created_at TEXT NOT NULL,
@@ -699,9 +693,11 @@ def init_db() -> None:
         last_login_at TEXT,
         last_magic_link_sent_at TEXT
       )
-    """)
+    """
+    )
 
-    cur.execute("""
+    cur.execute(
+        """
       CREATE TABLE IF NOT EXISTS magic_links (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         email TEXT NOT NULL,
@@ -714,9 +710,11 @@ def init_db() -> None:
         ip_hash TEXT,
         user_agent_hash TEXT
       )
-    """)
+    """
+    )
 
-    cur.execute("""
+    cur.execute(
+        """
       CREATE TABLE IF NOT EXISTS web_sessions (
         session_token TEXT PRIMARY KEY,
         email TEXT NOT NULL,
@@ -728,7 +726,8 @@ def init_db() -> None:
         ip_hash TEXT,
         user_agent_hash TEXT
       )
-    """)
+    """
+    )
 
     _try_add_column(conn, "email_subscriptions", "last_macro_sent_date TEXT")
     _try_add_column(conn, "users", "last_login_at TEXT")
@@ -825,10 +824,7 @@ def email_has_active_premium(email: str) -> bool:
 
     conn = _db()
     try:
-        user_row = conn.execute(
-            "SELECT premium_status FROM users WHERE email=?",
-            (email_n,),
-        ).fetchone()
+        user_row = conn.execute("SELECT premium_status FROM users WHERE email=?", (email_n,)).fetchone()
         if user_row and str(user_row["premium_status"] or "inactive") == "active":
             return True
 
@@ -840,7 +836,7 @@ def email_has_active_premium(email: str) -> bool:
     finally:
         conn.close()
 
-        
+
 # =============================================================================
 # Premium keys / subscriptions
 # =============================================================================
@@ -885,20 +881,14 @@ def get_active_api_key_for_email(email: str) -> Optional[str]:
 
 def _set_key_status_for_customer(customer_id: str, status: str) -> None:
     conn = _db()
-    conn.execute(
-        "UPDATE api_keys SET status=? WHERE stripe_customer_id=?",
-        (status, customer_id),
-    )
+    conn.execute("UPDATE api_keys SET status=? WHERE stripe_customer_id=?", (status, customer_id))
     conn.commit()
     conn.close()
 
 
 def _set_key_status_for_subscription(subscription_id: str, status: str) -> None:
     conn = _db()
-    conn.execute(
-        "UPDATE api_keys SET status=? WHERE stripe_subscription_id=?",
-        (status, subscription_id),
-    )
+    conn.execute("UPDATE api_keys SET status=? WHERE stripe_subscription_id=?", (status, subscription_id))
     conn.commit()
     conn.close()
 
@@ -915,10 +905,7 @@ def sync_premium_from_stripe(
 
     row = None
     if customer_id:
-        row = conn.execute(
-            "SELECT api_key FROM api_keys WHERE stripe_customer_id=? LIMIT 1",
-            (customer_id,),
-        ).fetchone()
+        row = conn.execute("SELECT api_key FROM api_keys WHERE stripe_customer_id=? LIMIT 1", (customer_id,)).fetchone()
 
     if not row and subscription_id:
         row = conn.execute(
@@ -971,13 +958,7 @@ def sync_premium_from_stripe(
 # Magic link login
 # =============================================================================
 
-def store_magic_link(
-    *,
-    email: str,
-    token: str,
-    next_url: str,
-    request: Optional[Request] = None,
-) -> None:
+def store_magic_link(*, email: str, token: str, next_url: str, request: Optional[Request] = None) -> None:
     conn = _db()
     api_key = get_active_api_key_for_email(email)
     conn.execute(
@@ -1002,10 +983,7 @@ def store_magic_link(
 
 def consume_magic_link(token: str, request: Optional[Request] = None) -> Optional[Dict[str, Any]]:
     conn = _db()
-    row = conn.execute(
-        "SELECT * FROM magic_links WHERE token=?",
-        (token,),
-    ).fetchone()
+    row = conn.execute("SELECT * FROM magic_links WHERE token=?", (token,)).fetchone()
 
     if not row:
         conn.close()
@@ -1019,10 +997,7 @@ def consume_magic_link(token: str, request: Optional[Request] = None) -> Optiona
         conn.close()
         return None
 
-    conn.execute(
-        "UPDATE magic_links SET consumed_at=? WHERE token=?",
-        (iso_now(), token),
-    )
+    conn.execute("UPDATE magic_links SET consumed_at=? WHERE token=?", (iso_now(), token))
 
     session_token = generate_token_urlsafe(32)
 
@@ -1045,21 +1020,14 @@ def consume_magic_link(token: str, request: Optional[Request] = None) -> Optiona
     conn.commit()
     conn.close()
 
-    return {
-        "email": row["email"],
-        "session_token": session_token,
-        "next_url": row["next_url"],
-    }
+    return {"email": row["email"], "session_token": session_token, "next_url": row["next_url"]}
 
 
 def revoke_web_session(token: Optional[str]) -> None:
     if not token:
         return
     conn = _db()
-    conn.execute(
-        "UPDATE web_sessions SET revoked_at=? WHERE session_token=?",
-        (iso_now(), token),
-    )
+    conn.execute("UPDATE web_sessions SET revoked_at=? WHERE session_token=?", (iso_now(), token))
     conn.commit()
     conn.close()
 
@@ -1069,10 +1037,7 @@ def get_session_auth(session_token: Optional[str]) -> Dict[str, Any]:
         return {"authenticated": False}
 
     conn = _db()
-    row = conn.execute(
-        "SELECT * FROM web_sessions WHERE session_token=?",
-        (session_token,),
-    ).fetchone()
+    row = conn.execute("SELECT * FROM web_sessions WHERE session_token=?", (session_token,)).fetchone()
 
     if not row:
         conn.close()
@@ -1089,10 +1054,7 @@ def get_session_auth(session_token: Optional[str]) -> Dict[str, Any]:
     email = row["email"]
     api_key = row["api_key"]
 
-    conn.execute(
-        "UPDATE web_sessions SET last_seen_at=? WHERE session_token=?",
-        (iso_now(), session_token),
-    )
+    conn.execute("UPDATE web_sessions SET last_seen_at=? WHERE session_token=?", (iso_now(), session_token))
     conn.commit()
     conn.close()
 
@@ -1105,11 +1067,7 @@ def get_session_auth(session_token: Optional[str]) -> Dict[str, Any]:
     }
 
 
-def resolve_auth_context(
-    *,
-    session_token: Optional[str],
-    x_api_key: Optional[str],
-) -> Dict[str, Any]:
+def resolve_auth_context(*, session_token: Optional[str], x_api_key: Optional[str]) -> Dict[str, Any]:
     session_auth = get_session_auth(session_token)
 
     if session_auth.get("authenticated"):
@@ -1117,10 +1075,7 @@ def resolve_auth_context(
 
     if x_api_key:
         conn = _db()
-        row = conn.execute(
-            "SELECT * FROM api_keys WHERE api_key=?",
-            (x_api_key,),
-        ).fetchone()
+        row = conn.execute("SELECT * FROM api_keys WHERE api_key=?", (x_api_key,)).fetchone()
         conn.close()
 
         if row and str(row["status"]) == "active":
@@ -1133,6 +1088,7 @@ def resolve_auth_context(
             }
 
     return {"authenticated": False}
+
 
 # =============================================================================
 # Yahoo Finance + indicators
@@ -1149,7 +1105,7 @@ class YahooPrice:
 
 
 def fetch_yahoo_chart(symbol: str, range_: str, interval: str) -> Dict[str, Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/4.2)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/4.3)"}
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
     return http_get_json(url, headers=headers)
 
@@ -1179,14 +1135,7 @@ def fetch_yahoo_price(symbol: str) -> YahooPrice:
     except Exception:
         pass
 
-    return YahooPrice(
-        symbol=symbol,
-        last=last,
-        prev=prev,
-        change_pct=change_pct,
-        currency=currency,
-        ts=iso_now(),
-    )
+    return YahooPrice(symbol=symbol, last=last, prev=prev, change_pct=change_pct, currency=currency, ts=iso_now())
 
 
 def sma(values: List[float], n: int) -> Optional[float]:
@@ -1231,11 +1180,7 @@ def compute_signal(symbol: str) -> Tuple[str, Dict[str, Any]]:
     closes = extract_closes(chart)
 
     if len(closes) < 55:
-        return "neutral", {
-            "reason": "For lite historikk til SMA20/SMA50. Setter nøytral.",
-            "rsi14": None,
-            "trend_score": None,
-        }
+        return "neutral", {"reason": "For lite historikk til SMA20/SMA50. Setter nøytral.", "rsi14": None, "trend_score": None}
 
     last = closes[-1]
     s20 = sma(closes, 20)
@@ -1244,31 +1189,15 @@ def compute_signal(symbol: str) -> Tuple[str, Dict[str, Any]]:
     tscore = trend_score_from_mas(last, s20, s50)
 
     if s20 is None or s50 is None:
-        return "neutral", {
-            "reason": "Kunne ikke beregne glidende snitt.",
-            "rsi14": rsi14v,
-            "trend_score": tscore,
-        }
+        return "neutral", {"reason": "Kunne ikke beregne glidende snitt.", "rsi14": rsi14v, "trend_score": tscore}
 
     if last > s20 > s50:
-        return "bullish", {
-            "reason": "Pris over SMA20 og SMA50, med positiv trend.",
-            "rsi14": rsi14v,
-            "trend_score": tscore,
-        }
+        return "bullish", {"reason": "Pris over SMA20 og SMA50, med positiv trend.", "rsi14": rsi14v, "trend_score": tscore}
 
     if last < s20 < s50:
-        return "bearish", {
-            "reason": "Pris under SMA20 og SMA50, med negativ trend.",
-            "rsi14": rsi14v,
-            "trend_score": tscore,
-        }
+        return "bearish", {"reason": "Pris under SMA20 og SMA50, med negativ trend.", "rsi14": rsi14v, "trend_score": tscore}
 
-    return "neutral", {
-        "reason": "Blandet bilde mellom pris og glidende snitt.",
-        "rsi14": rsi14v,
-        "trend_score": tscore,
-    }
+    return "neutral", {"reason": "Blandet bilde mellom pris og glidende snitt.", "rsi14": rsi14v, "trend_score": tscore}
 
 
 def compute_technical_levels(symbol: str) -> Dict[str, Any]:
@@ -1337,14 +1266,7 @@ def parse_rss(xml_text: str, fallback_source: str) -> List[Dict[str, str]]:
         link = (item.findtext("link") or "").strip()
         pub = (item.findtext("pubDate") or "").strip()
         if title and link:
-            items.append(
-                {
-                    "title": title,
-                    "link": link,
-                    "source": channel_title,
-                    "published": pub,
-                }
-            )
+            items.append({"title": title, "link": link, "source": channel_title, "published": pub})
     return items
 
 
@@ -1365,7 +1287,7 @@ def fetch_headlines(limit: int = FULL_HEADLINES_LIMIT) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
 
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/4.2)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/4.3)"}
     all_items: List[Dict[str, str]] = []
 
     for feed_url in RSS_FEEDS:
@@ -1613,7 +1535,6 @@ Uten et tydelig brudd opp eller ned er det mest sannsynlige scenarioet videre ko
 
 def fallback_forecast_text(signal_state: str, price_usd: Optional[float]) -> str:
     price_txt = f"{price_usd:.0f} USD" if isinstance(price_usd, (int, float)) else "dagens nivå"
-
     return f"""De neste 24–72 timene ventes gull å handle rundt {price_txt}. Basisscenarioet er videre konsolidering mens markedet reagerer på renter, USD og geopolitikk.
 
 Et bullscenario kan oppstå dersom renter faller eller safe-haven-etterspørselen øker, mens et bearscenario kan oppstå dersom dollaren styrker seg og realrentene stiger."""
@@ -1742,18 +1663,9 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
     return {
         "updated_at": data.get("updated_at") or iso_now(),
         "version": data.get("version", APP_VERSION),
-        "gold": {
-            "price_usd": data.get("price_usd"),
-            "change_pct": data.get("change_pct"),
-        },
-        "signal": {
-            "state": data.get("signal", "neutral"),
-            "reason_short": data.get("signal_reason", ""),
-        },
-        "macro": {
-            "mode": mode,
-            "summary_short": summary,
-        },
+        "gold": {"price_usd": data.get("price_usd"), "change_pct": data.get("change_pct")},
+        "signal": {"state": data.get("signal", "neutral"), "reason_short": data.get("signal_reason", "")},
+        "macro": {"mode": mode, "summary_short": summary},
         "headlines": (data.get("headlines") or [])[:FREE_HEADLINES_LIMIT],
         "headlines_total": len(data.get("headlines") or []),
         "headlines_free_limit": FREE_HEADLINES_LIMIT,
@@ -1763,8 +1675,8 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
 def get_public_today_payload(mode: str = "analysis") -> Dict[str, Any]:
     data = get_public_brief(force_build=False)
     return map_to_public_today(data, mode)
-    
-# =============================================================================
+
+    # =============================================================================
 # History
 # =============================================================================
 
@@ -1878,9 +1790,7 @@ def read_history(limit: int = 500) -> List[Dict[str, Any]]:
 
 
 def add_forward_returns(rows: List[Dict[str, Any]], days_list=(7, 30)) -> List[Dict[str, Any]]:
-    parsed: List[Tuple[Optional[datetime], Dict[str, Any]]] = [
-        (parse_iso_or_rss(r.get("updated_at", "")), r) for r in rows
-    ]
+    parsed: List[Tuple[Optional[datetime], Dict[str, Any]]] = [(parse_iso_or_rss(r.get("updated_at", "")), r) for r in rows]
 
     for t, r in parsed:
         p0 = safe_float(r.get("price_usd"))
@@ -1971,26 +1881,6 @@ def get_archive_dates(last_n_days: int = 45) -> List[str]:
     dates.sort(reverse=True)
     return dates
 
-def get_latest_articles(limit: int = 3):
-    rows = read_history(limit=50)
-    articles = []
-
-    for r in rows:
-        d = date_yyyy_mm_dd_from_iso_or_rss(str(r.get("updated_at") or ""))
-        if not d:
-            continue
-
-        articles.append({
-            "date": d,
-            "title": f"Gullpris analyse {d}",
-            "url": f"/archive/{d}"
-        })
-
-        if len(articles) >= limit:
-            break
-
-    return articles    
-
 
 def load_snapshot_for_date(day: str) -> Optional[Dict[str, Any]]:
     p = _ensure_history_dir()
@@ -2035,11 +1925,7 @@ def send_email(to_email: str, subject: str, body: str) -> None:
 
     r = requests.post(
         "https://api.brevo.com/v3/smtp/email",
-        headers={
-            "accept": "application/json",
-            "content-type": "application/json",
-            "api-key": BREVO_API_KEY,
-        },
+        headers={"accept": "application/json", "content-type": "application/json", "api-key": BREVO_API_KEY},
         json=payload,
         timeout=20,
     )
@@ -2076,10 +1962,7 @@ def request_magic_link(email: str, request: Request, next_url: str = "/archive")
     send_email(email_n, subject, body)
 
     conn = _db()
-    conn.execute(
-        "UPDATE users SET last_magic_link_sent_at=?, updated_at=? WHERE email=?",
-        (iso_now(), iso_now(), email_n),
-    )
+    conn.execute("UPDATE users SET last_magic_link_sent_at=?, updated_at=? WHERE email=?", (iso_now(), iso_now(), email_n))
     conn.commit()
     conn.close()
 
@@ -2129,6 +2012,8 @@ def build_daily_social_post(data: Dict[str, Any], request: Optional[Request] = N
 
 
 def build_news_social_post(article: Dict[str, Any], request: Optional[Request] = None) -> Dict[str, Any]:
+    article = normalize_article_for_display(article)
+
     base = get_base_url(request) if request else (BASE_URL or "https://gullbrief.no")
     path = str(article.get("path") or "/")
     url = absolute_url(base, path)
@@ -2150,32 +2035,28 @@ def build_news_social_post(article: Dict[str, Any], request: Optional[Request] =
             f"{title}\n\n"
             f"{summary}\n\n"
             f"{url}\n\n"
-            f"Full analysis and signal update:\nhttps://gullbrief.no/premium\n\n"
+            f"Full analyse og signaloppdatering:\nhttps://gullbrief.no/premium\n\n"
             f"#gull #gullpris #marked #økonomi"
         )
 
-    return {
-        "title": title,
-        "url": url,
-        "text": text,
-        "lang": lang,
-    }
-    
+    return {"title": title, "url": url, "text": text, "lang": lang}
+
+
 # =============================================================================
 # Navigation / UI helpers
 # =============================================================================
 
 def nav_tabs(active: str) -> str:
     tabs = [
-    ("/gullpris-analyse", "analysis", "📈 Analyse"),
-    ("/gullpris-prognose", "forecast", "🔮 Prognose"),
-    ("/xauusd", "xauusd", "💵 XAUUSD"),
-    ("/gullpris-signal", "signal", "🚦 Signal"),
-    ("/nyheter", "nyheter", "🇳🇴 Nyheter"),
-    ("/gold-price-forecast", "gold_forecast", "🌍 Forecast"),
-    ("/news", "news", "📰 News"),
-    ("/premium", "premium", "⭐ Premium"),
-]
+        ("/gullpris-analyse", "analysis", "📈 Analyse"),
+        ("/gullpris-prognose", "forecast", "🔮 Prognose"),
+        ("/xauusd", "xauusd", "💵 XAUUSD"),
+        ("/gullpris-signal", "signal", "🚦 Signal"),
+        ("/nyheter", "nyheter", "🇳🇴 Nyheter"),
+        ("/gold-price-forecast", "gold_forecast", "🌍 Forecast"),
+        ("/news", "news", "📰 News"),
+        ("/premium", "premium", "⭐ Premium"),
+    ]
     links = []
     for href, key, label in tabs:
         cls = "tab active" if key == active else "tab"
@@ -2202,6 +2083,8 @@ def jsonld_website(base: str) -> str:
         },
     }
     return '<script type="application/ld+json">' + json.dumps(data, ensure_ascii=False) + "</script>"
+
+
 def translate_headline_to_norwegian(title: str) -> str:
     if not title:
         return title
@@ -2241,6 +2124,7 @@ def translate_headline_to_norwegian(title: str) -> str:
 
     return out
 
+
 def jsonld_article(
     base: str,
     title: str,
@@ -2259,10 +2143,7 @@ def jsonld_article(
         "publisher": {
             "@type": "Organization",
             "name": APP_NAME,
-            "logo": {
-                "@type": "ImageObject",
-                "url": absolute_url(base, "/static/apple-touch-icon.png"),
-            },
+            "logo": {"@type": "ImageObject", "url": absolute_url(base, "/static/apple-touch-icon.png")},
         },
         "dateModified": iso_now(),
     }
@@ -2287,10 +2168,7 @@ def jsonld_news_article(base: str, article: Dict[str, Any]) -> str:
         "publisher": {
             "@type": "Organization",
             "name": NEWS_PUBLISHER_NAME,
-            "logo": {
-                "@type": "ImageObject",
-                "url": absolute_url(base, NEWS_PUBLISHER_LOGO),
-            },
+            "logo": {"@type": "ImageObject", "url": absolute_url(base, NEWS_PUBLISHER_LOGO)},
         },
     }
     return '<script type="application/ld+json">' + json.dumps(data, ensure_ascii=False) + "</script>"
@@ -2498,17 +2376,9 @@ COMMON_STYLE = """
     background:rgba(255,255,255,.08);
     color:var(--text);
   }
-  .legal-card h2{
-    margin-top:0;
-  }
-  .legal-card h3{
-    margin-top:22px;
-    margin-bottom:8px;
-    font-size:17px;
-  }
-  .legal-card p, .legal-card li{
-    color:var(--text);
-  }
+  .legal-card h2{margin-top:0}
+  .legal-card h3{margin-top:22px;margin-bottom:8px;font-size:17px}
+  .legal-card p, .legal-card li{color:var(--text)}
   .authbox{
     margin-top:16px;
     padding:16px;
@@ -2523,14 +2393,9 @@ COMMON_STYLE = """
     border:1px solid rgba(212,175,55,.18);
     background:rgba(212,175,55,.05);
   }
-  .article-body p{
-    margin:0 0 16px;
-  }
-  .article-body h2{
-    margin:26px 0 10px;
-    font-size:22px;
-    font-family:ui-serif,Georgia,Times;
-  }
+  .newslist h3{margin-top:0}
+  .article-body p{margin:0 0 16px}
+  .article-body h2{margin:26px 0 10px;font-size:22px;font-family:ui-serif,Georgia,Times}
 </style>
 """
 
@@ -2553,10 +2418,7 @@ def html_shell(
     robots = "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1"
     twitter_site_meta = f'<meta name="twitter:site" content="{_escape_html(TWITTER_SITE)}" />' if TWITTER_SITE else ""
 
-    favicon_meta = (
-        '<link rel="icon" href="/static/favicon.ico" sizes="any" />'
-        '<link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />'
-    )
+    favicon_meta = '<link rel="icon" href="/static/favicon.ico" sizes="any" />' '<link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />'
 
     head = (
         '<meta charset="utf-8" />'
@@ -2585,22 +2447,36 @@ def html_shell(
         + extra_jsonld
     )
 
-    return (
-        "<!doctype html>"
-        f'<html lang="{lang}"><head>'
-        + head
-        + COMMON_STYLE
-        + "</head><body>"
-        + body_html
-        + "</body></html>"
-    )
+    return "<!doctype html>" f'<html lang="{lang}"><head>' + head + COMMON_STYLE + "</head><body>" + body_html + "</body></html>"
 
 
 # =============================================================================
 # Templates / boxes
 # =============================================================================
 
-def footer_links() -> str:
+def footer_links(is_en: bool = False) -> str:
+    if is_en:
+        return """
+        <footer>
+          <div class="links">
+            <a href="/gullpris-prognose">Norwegian forecast</a>
+            <a href="/gullpris">Norwegian gold price</a>
+            <a href="/gullpris-analyse">Norwegian analysis</a>
+            <a href="/gullpris-signal">Norwegian signal</a>
+            <a href="/gold-price-forecast">Gold price forecast</a>
+            <a href="/xauusd">XAUUSD</a>
+            <a href="/news">News</a>
+            <a href="/nyheter">Nyheter</a>
+            <a href="/premium">Premium</a>
+            <a href="/archive">Archive</a>
+            <a href="/kontakt">Contact</a>
+            <a href="/terms">Terms</a>
+            <a href="/privacy">Privacy</a>
+          </div>
+          <div style="margin-top:8px">© Gullbrief. Not investment advice.</div>
+        </footer>
+        """
+
     return """
     <footer>
       <div class="links">
@@ -2661,22 +2537,178 @@ def premium_feature_box_en() -> str:
     """
 
 
+def translate_signal_reason_to_english(reason: str) -> str:
+    r = (reason or "").strip()
+    mapping = {
+        "Pris over SMA20 og SMA50, med positiv trend.": "Price above SMA20 and SMA50, with a positive trend.",
+        "Pris under SMA20 og SMA50, med negativ trend.": "Price below SMA20 and SMA50, with a negative trend.",
+        "Blandet bilde mellom pris og glidende snitt.": "Mixed picture between price and moving averages.",
+        "For lite historikk til SMA20/SMA50. Setter nøytral.": "Too little history for SMA20/SMA50. Setting neutral.",
+        "Kunne ikke beregne glidende snitt.": "Could not calculate moving averages.",
+    }
+    return mapping.get(r, r)
+
+
+def format_article_date(value: str, lang: str = "no") -> str:
+    dt = parse_iso_or_rss(value)
+    if not dt:
+        return value or ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    months_no = {
+        1: "januar",
+        2: "februar",
+        3: "mars",
+        4: "april",
+        5: "mai",
+        6: "juni",
+        7: "juli",
+        8: "august",
+        9: "september",
+        10: "oktober",
+        11: "november",
+        12: "desember",
+    }
+    months_en = {
+        1: "January",
+        2: "February",
+        3: "March",
+        4: "April",
+        5: "May",
+        6: "June",
+        7: "July",
+        8: "August",
+        9: "September",
+        10: "October",
+        11: "November",
+        12: "December",
+    }
+
+    if lang == "en":
+        return f"{months_en[dt.month]} {dt.day}, {dt.year}"
+    return f"{dt.day}. {months_no[dt.month]} {dt.year}"
+
+
+def improve_generated_title(lang: str, article_type: str, day: str, summary: str = "") -> str:
+    summary_l = (summary or "").lower()
+
+    if lang == "en":
+        if article_type == "analysis":
+            return f"Gold price forecast: key levels to watch on {day}"
+        if "usd" in summary_l or "yields" in summary_l:
+            return "Gold market update: USD, yields and sentiment in focus"
+        return f"Gold market update: macro drivers shaping gold on {day}"
+
+    if article_type == "analysis":
+        return f"Gullpris analyse: viktige nivåer å følge {day}"
+    if "inflasjon" in summary_l or "renter" in summary_l:
+        return "Gullpris i dag: renter, inflasjon og markedsstemning i fokus"
+    return f"Gullmarkedet i dag: oppdatering og nøkkelnivåer {day}"
+
+
+def normalize_article_for_display(article: Dict[str, Any]) -> Dict[str, Any]:
+    a = dict(article)
+    lang = str(a.get("lang") or "no")
+    article_type = str(a.get("type") or "news")
+    day = str(a.get("date") or "")
+    title = str(a.get("title") or "").strip()
+    summary = str(a.get("summary") or "").strip()
+    content = str(a.get("content") or "")
+
+    bad_prefixes = ["Gold market update ", "Gold price forecast ", "Gull marked oppdatering ", "Gullpris analyse "]
+
+    if title.endswith(day) or any(title.startswith(p) for p in bad_prefixes):
+        a["title"] = improve_generated_title(lang, article_type, day, summary)
+
+    if lang == "no":
+        content = content.replace("Full analysis and signal update:", "Full analyse og signaloppdatering:")
+    else:
+        content = content.replace("Full analyse og signaloppdatering:", "Full analysis and signal update:")
+
+    a["content"] = content
+    return a
+
+
+def get_recent_news_articles(lang: str, limit: int = 3, exclude_slug: Optional[str] = None) -> List[Dict[str, Any]]:
+    items = []
+    for article in get_news_articles():
+        if str(article.get("lang") or "") != lang:
+            continue
+        if exclude_slug and str(article.get("slug") or "") == exclude_slug:
+            continue
+        items.append(normalize_article_for_display(article))
+    return items[:limit]
+
+
+def render_recent_articles_box(lang: str, exclude_slug: Optional[str] = None) -> str:
+    articles = get_recent_news_articles(lang=lang, limit=3, exclude_slug=exclude_slug)
+    if not articles:
+        return ""
+
+    title = "Latest articles" if lang == "en" else "Siste artikler"
+    count_label = "items" if lang == "en" else "artikler"
+
+    items = []
+    for article in articles:
+        path = str(article.get("path") or "#")
+        title_txt = str(article.get("title") or "")
+        summary = str(article.get("summary") or "")
+        published = format_article_date(str(article.get("published_at") or article.get("date") or ""), lang=lang)
+        items.append(
+            "<li>"
+            f'<a href="{_escape_html(path)}"><b>{_escape_html(title_txt)}</b></a><br/>'
+            f'<span class="muted">{_escape_html(summary)}</span><br/>'
+            f'<span class="small">{_escape_html(published)}</span>'
+            "</li>"
+        )
+
+    return f"""
+    <section class="grid" style="grid-template-columns:1fr">
+      <div class="card">
+        <div class="title"><h2>{title}</h2><div class="muted">{len(articles)} {count_label}</div></div>
+        <ul>{''.join(items)}</ul>
+      </div>
+    </section>
+    """
+
+
+def get_latest_articles(limit: int = 3, lang: str = "no") -> List[Dict[str, Any]]:
+    articles = get_recent_news_articles(lang=lang, limit=limit)
+    out = []
+    for article in articles:
+        out.append({"date": str(article.get("date") or ""), "title": str(article.get("title") or ""), "url": str(article.get("path") or "#")})
+    return out
+
+
 def auth_login_box(next_url: str = "/archive", sent: bool = False, email: str = "", is_en: bool = False) -> str:
     sent_html = ""
     if sent:
-        sent_html = f'<p class="small" style="margin-top:10px">Magic link sendt til {_escape_html(email)} dersom adressen finnes i systemet.</p>'
+        sent_text = (
+            f"Magic link sent to {_escape_html(email)} if the address exists in the system."
+            if is_en
+            else f"Magic link sendt til {_escape_html(email)} dersom adressen finnes i systemet."
+        )
+        sent_html = f'<p class="small" style="margin-top:10px">{sent_text}</p>'
+
+    title = "Sign in with magic link" if is_en else "Logg inn med magic link"
+    desc = (
+        "If you purchased Premium, get a login link sent to your email. No password required."
+        if is_en
+        else "Har du kjøpt Premium? Få innloggingslenke på e-post, uten passord."
+    )
+    placeholder = "Your email" if is_en else "Din e-post"
+    button = "Send magic link"
 
     return f"""
     <div class="authbox">
-      <h3 style="margin:0 0 8px">{'Log in with magic link' if is_en else 'Logg inn med magic link'}</h3>
-      <p class="muted" style="margin:0 0 10px">
-      {'If you purchased Premium, get a login link sent to your email. No password required.' if is_en else 'Har du kjøpt Premium? Få innloggingslenke på e-post, uten passord.'}
-      </p>
+      <h3 style="margin:0 0 8px">{title}</h3>
+      <p class="muted" style="margin:0 0 10px">{desc}</p>
       <form method="post" action="/auth/request-link">
-        <input name="email" type="email" placeholder="Din e-post" autocomplete="email" />
+        <input name="email" type="email" placeholder="{placeholder}" autocomplete="email" />
         <input type="hidden" name="next_url" value="{_escape_html(next_url)}" />
         <div class="btnrow">
-          <button type="submit">{'Send magic link' if is_en else 'Send magic link'}</button>
+          <button type="submit">{button}</button>
         </div>
       </form>
       {sent_html}
@@ -2685,19 +2717,23 @@ def auth_login_box(next_url: str = "/archive", sent: bool = False, email: str = 
 
 
 def key_fallback_box(is_en: bool = False) -> str:
+    title = "Have a premium key?" if is_en else "Har du premium-nøkkel?"
+    desc = "You can paste your premium key here." if is_en else "Du kan lime inn premium-nøkkelen din her."
+    placeholder = "Premium key" if is_en else "Premium-nøkkel"
+    button = "Save key" if is_en else "Lagre nøkkel"
+
     return f"""
-<div class="keystabox">
-    <h3 style="margin:0 0 8px">{'Do you have a premium key?' if is_en else 'Har du premium-nøkkel?'}</h3>
-    <p class="muted" style="margin:0 0 10px">
-        {'You can paste your premium key here.' if is_en else 'Du kan lime inn premium-nøkkelen din her.'}
-    </p>
+<div class="keypastebox">
+    <h3 style="margin:0 0 8px">{title}</h3>
+    <p class="muted" style="margin:0 0 10px">{desc}</p>
 
     <div class="btnrow">
-        <input id="globalPremiumKey" placeholder="Premium-nøkkel" autocomplete="off" />
-        <button>Lagre nøkkel</button>
+        <input id="globalPremiumKey" placeholder="{placeholder}" autocomplete="off" />
+        <button>{button}</button>
     </div>
 </div>
 """
+
 
 INDEX_BODY_TEMPLATE = """
 <div class="wrap">
@@ -2907,10 +2943,10 @@ PREMIUM_BODY_TEMPLATE = """
       </ul>
     </div>
   </section>
-    <section class="card" style="margin-top:16px">
+  <section class="card" style="margin-top:16px">
     <h2>Siste artikler</h2>
     __LATEST_NEWS__
-    </section>
+  </section>
   __FOOTER__
 </div>
 
@@ -2936,8 +2972,6 @@ PREMIUM_BODY_TEMPLATE = """
   $("btnPay").addEventListener("click", startCheckout);
 </script>
 """
-
-
 SEO_LANDING_TEMPLATE = """
 <div class="wrap">
   <header>
@@ -2988,6 +3022,7 @@ SEO_LANDING_TEMPLATE = """
   </section>
 
   __SEO_TEXT__
+  __LATEST_NEWS__
   __FOOTER__
 </div>
 
@@ -3166,9 +3201,7 @@ ARCHIVE_BODY_INNER = """
   function setTeaser(msg){ $("teaserStatus").textContent = msg; }
 
   function loadSavedKey(){
-    try{
-      $("key").value = localStorage.getItem(LS_KEY) || "";
-    }catch(e){}
+    try{ $("key").value = localStorage.getItem(LS_KEY) || ""; }catch(e){}
   }
 
   async function loadTeaser(){
@@ -3288,9 +3321,7 @@ ARCHIVE_BODY_INNER = """
     try{
       localStorage.setItem(LS_KEY, $("key").value.trim());
       setStatus("Nøkkel lagret lokalt ✅");
-    }catch(e){
-      setStatus("Kunne ikke lagre nøkkel.");
-    }
+    }catch(e){ setStatus("Kunne ikke lagre nøkkel."); }
   });
   $("btnClear").addEventListener("click", ()=>{
     try{
@@ -3299,9 +3330,7 @@ ARCHIVE_BODY_INNER = """
       setStatus("Nøkkel fjernet.");
       $("tbl").style.display="none";
       $("body").innerHTML="";
-    }catch(e){
-      setStatus("Kunne ikke fjerne nøkkel.");
-    }
+    }catch(e){ setStatus("Kunne ikke fjerne nøkkel."); }
   });
   $("btnLoad").addEventListener("click", loadArchive);
   $("btnEmail").addEventListener("click", subscribeEmail);
@@ -3383,18 +3412,6 @@ LEGAL_PAGE_TEMPLATE = """
 """
 
 
-def translate_signal_reason_to_english(reason: str) -> str:
-    r = (reason or "").strip()
-    mapping = {
-        "Pris over SMA20 og SMA50, med positiv trend.": "Price above SMA20 and SMA50, with a positive trend.",
-        "Pris under SMA20 og SMA50, med negativ trend.": "Price below SMA20 and SMA50, with a negative trend.",
-        "Blandet bilde mellom pris og glidende snitt.": "Mixed picture between price and moving averages.",
-        "For lite historikk til SMA20/SMA50. Setter nøytral.": "Too little history for SMA20/SMA50. Setting neutral.",
-        "Kunne ikke beregne glidende snitt.": "Could not calculate moving averages.",
-    }
-    return mapping.get(r, r)
-
-
 def seo_landing(
     request: Request,
     path: str,
@@ -3413,13 +3430,12 @@ def seo_landing(
 
     is_en = lang == "en"
     if is_en and isinstance(initial_payload.get("signal"), dict):
-        initial_payload["signal"]["reason_short"] = translate_signal_reason_to_english(
-            str(initial_payload["signal"].get("reason_short") or "")
-        )
+        initial_payload["signal"]["reason_short"] = translate_signal_reason_to_english(str(initial_payload["signal"].get("reason_short") or ""))
 
     premium_box_html = premium_feature_box_en() if is_en else premium_feature_box()
     auth_box_html = auth_login_box(next_url=path, sent=sent_magic_link, email=sent_email, is_en=is_en)
     key_box_html = key_fallback_box(is_en=is_en)
+    latest_news_html = render_recent_articles_box("en" if is_en else "no")
 
     body = _replace_many(
         SEO_LANDING_TEMPLATE,
@@ -3427,7 +3443,7 @@ def seo_landing(
             "__APP_NAME__": _escape_html(APP_NAME),
             "__H1__": _escape_html(h1),
             "__INTRO__": _escape_html(intro),
-            "__FOOTER__": footer_links(),
+            "__FOOTER__": footer_links(is_en=is_en),
             "__MODE__": _escape_html(mode),
             "__NAV_TABS__": nav_tabs(nav_active),
             "__INITIAL_JSON__": json_for_html(initial_payload),
@@ -3435,6 +3451,7 @@ def seo_landing(
             "__AUTH_BOX__": auth_box_html,
             "__KEY_BOX__": key_box_html,
             "__SEO_TEXT__": seo_text_html,
+            "__LATEST_NEWS__": latest_news_html,
             "__CARD_TITLE__": "Gold price today" if is_en else "Gullpris i dag",
             "__UPDATED_LOADING__": "Updating…" if is_en else "Oppdaterer…",
             "__CHANGE_LOADING__": "Change: –" if is_en else "Endring: –",
@@ -3445,14 +3462,12 @@ def seo_landing(
             "__HEADLINES_SUB__": "Direct sources" if is_en else "Direkte kilder",
             "__PREMIUM_NEWS_HINT__": (
                 "Showing __FREE_LIMIT__ recent articles. Premium gives access to more market headlines, the longer report and the archive. <a href=&quot;/premium&quot;>Open Premium</a>"
-                if is_en else
-                "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=&quot;/premium&quot;>Åpne Premium</a>"
+                if is_en
+                else "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=&quot;/premium&quot;>Åpne Premium</a>"
             ),
         },
     )
-    return HTMLResponse(
-        html_shell(request, title=title, description=desc, path=path, body_html=body, lang=lang)
-    )
+    return HTMLResponse(html_shell(request, title=title, description=desc, path=path, body_html=body, lang=lang))
 
 
 def legal_page(request: Request, path: str, title: str, intro: str, content_html: str) -> HTMLResponse:
@@ -3469,7 +3484,8 @@ def legal_page(request: Request, path: str, title: str, intro: str, content_html
     )
     return HTMLResponse(html_shell(request, title=title, description=intro, path=path, body_html=body))
 
- # =============================================================================
+
+# =============================================================================
 # News engine
 # =============================================================================
 
@@ -3545,12 +3561,16 @@ def _fallback_article_body(
     titles = _headline_titles(headlines, 6)
     headline_block = "\n".join([f"- {t}" for t in titles]) if titles else "- Ingen støttende overskrifter tilgjengelig"
 
+    price_txt_en = f"${price:,.2f}" if price is not None else "N/A"
+    price_txt_no = f"${price:,.2f}" if price is not None else "ukjent"
+    chg_txt = f"{change_pct:+.2f}%" if change_pct is not None else "ukjent"
+
     if lang == "en":
         headline_block = "\n".join([f"- {t}" for t in titles]) if titles else "- No supporting headlines available"
         if article_type == "analysis":
             return (
                 f"{title}\n\n"
-                f"Gold is trading around ${price:,.2f} with a daily move of {change_pct:+.2f}% where data is available, while the internal signal stands at {signal}.\n\n"
+                f"Gold is trading around {price_txt_en} with a daily move of {chg_txt} where data is available, while the internal signal stands at {signal}.\n\n"
                 f"Near-term price action remains tied to the interaction between the US dollar, Treasury yields, inflation expectations and broader risk sentiment. When real yields rise and the dollar strengthens, gold often faces resistance. When markets rotate into defensive positioning, gold can regain support rather quickly.\n\n"
                 f"Recent context:\n{headline_block}\n\n"
                 f"{forecast_en or 'The most likely short-term scenario is continued consolidation unless a stronger macro catalyst shifts sentiment.'}\n\n"
@@ -3561,7 +3581,7 @@ def _fallback_article_body(
 
         return (
             f"{title}\n\n"
-            f"Gold markets are being shaped by inflation data, rate expectations, the US dollar, oil and geopolitical headlines. Today gold is trading around ${price:,.2f} with a daily move of {change_pct:+.2f}% where data is available, while the internal signal stands at {signal}.\n\n"
+            f"Gold markets are being shaped by inflation data, rate expectations, the US dollar, oil and geopolitical headlines. Today gold is trading around {price_txt_en} with a daily move of {chg_txt} where data is available, while the internal signal stands at {signal}.\n\n"
             f"Headlines influencing sentiment right now:\n{headline_block}\n\n"
             f"These drivers matter because gold tends to react quickly when markets reassess real rates and the path for policy. Oil can matter when it feeds inflation expectations, while geopolitical risk can amplify safe-haven demand.\n\n"
             f"The near-term tone remains reactive rather than settled. Gold can stay firm in periods of uncertainty, but sustained upside often becomes more credible when the dollar softens or yields stop climbing.\n\n"
@@ -3571,22 +3591,22 @@ def _fallback_article_body(
     if article_type == "analysis":
         return (
             f"{title}\n\n"
-            f"Gull handles rundt ${price:,.2f} med en dagsendring på {change_pct:+.2f}% der data er tilgjengelig, mens det interne signalet nå står i {signal}.\n\n"
+            f"Gull handles rundt {price_txt_no} med en dagsendring på {chg_txt} der data er tilgjengelig, mens det interne signalet nå står i {signal}.\n\n"
             f"På kort sikt styres gullprisen i stor grad av samspillet mellom renter, dollar, inflasjonsforventninger og generell uro i markedet. Når realrentene stiger og dollaren styrker seg, blir det ofte tyngre for gull. Når investorer søker tryggere plasseringer, øker derimot interessen for gull som safe haven.\n\n"
             f"Aktuell markedskontekst:\n{headline_block}\n\n"
             f"{forecast or 'Basisscenarioet er videre konsolidering de neste 24 til 72 timene, med mindre et tydelig makrosignal endrer stemningen.'}\n\n"
             f"{xauusd or 'XAUUSD påvirkes særlig av DXY, renter og endringer i risk-on/risk-off.'}\n\n"
             f"{analysis or 'Oppsettet tilsier at investorer bør følge både makrodata, momentum og tverrmarkedssignaler tett.'}\n\n"
-            f"Full analysis and signal update:\nhttps://gullbrief.no/premium"
+            f"Full analyse og signaloppdatering:\nhttps://gullbrief.no/premium"
         )
 
     return (
         f"{title}\n\n"
-        f"Gullmarkedet påvirkes nå av inflasjonstall, renteutsikter, dollar, olje og geopolitisk uro. I dag ligger gull rundt ${price:,.2f} med en dagsbevegelse på {change_pct:+.2f}% der data er tilgjengelig, mens det interne signalet står i {signal}.\n\n"
+        f"Gullmarkedet påvirkes nå av inflasjonstall, renteutsikter, dollar, olje og geopolitisk uro. I dag ligger gull rundt {price_txt_no} med en dagsbevegelse på {chg_txt} der data er tilgjengelig, mens det interne signalet står i {signal}.\n\n"
         f"Markedspunkter som preger bildet akkurat nå:\n{headline_block}\n\n"
         f"Dette betyr noe fordi gull ofte reagerer raskt når markedet justerer forventningene til renter og realrenter. Også olje og geopolitikk kan spille inn når det påvirker inflasjon eller øker etterspørselen etter tryggere plasseringer.\n\n"
         f"Det kortsiktige bildet er mer reaktivt enn avklart. Gull kan holde seg sterkt ved økt uro, men videre oppgang får ofte bedre fotfeste dersom dollaren roer seg eller rentene faller tilbake.\n\n"
-        f"Full analysis and signal update:\nhttps://gullbrief.no/premium"
+        f"Full analyse og signaloppdatering:\nhttps://gullbrief.no/premium"
     )
 
 
@@ -3599,13 +3619,7 @@ def generate_article_content(
     headlines: List[Dict[str, str]],
 ) -> str:
     if not OPENAI_API_KEY:
-        return _fallback_article_body(
-            lang=lang,
-            article_type=article_type,
-            title=title,
-            snapshot=snapshot,
-            headlines=headlines,
-        )
+        return _fallback_article_body(lang=lang, article_type=article_type, title=title, snapshot=snapshot, headlines=headlines)
 
     titles = _headline_titles(headlines, 8)
     titles_block = "\n".join([f"- {t}" for t in titles]) if titles else "- None"
@@ -3621,10 +3635,12 @@ def generate_article_content(
         language_instruction = "Write in English."
         style_instruction = "Write a news-style gold market article." if article_type == "news" else "Write an analysis-style gold market article."
         extra_context = f"Forecast: {forecast_en}\nXAUUSD context: {xauusd}\n"
+        cta = "Full analysis and signal update:\nhttps://gullbrief.no/premium"
     else:
         language_instruction = "Skriv på norsk bokmål."
         style_instruction = "Skriv en nyhetspreget markedssak om gull." if article_type == "news" else "Skriv en analysepreget markedssak om gull."
         extra_context = f"Forecast: {forecast}\nXAUUSD context: {xauusd}\n"
+        cta = "Full analyse og signaloppdatering:\nhttps://gullbrief.no/premium"
 
     prompt = (
         f"{language_instruction}\n"
@@ -3643,29 +3659,18 @@ def generate_article_content(
         "- ikke skriv investeringsråd\n"
         "- bruk en klar avslutning\n"
         "- avslutt alltid med nøyaktig denne CTA-en:\n"
-        "Full analysis and signal update:\nhttps://gullbrief.no/premium\n"
+        f"{cta}\n"
     )
 
     try:
         from openai import OpenAI  # type: ignore
+
         client = OpenAI(api_key=OPENAI_API_KEY)
         resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
         text = (resp.output_text or "").strip()
-        return text or _fallback_article_body(
-            lang=lang,
-            article_type=article_type,
-            title=title,
-            snapshot=snapshot,
-            headlines=headlines,
-        )
+        return text or _fallback_article_body(lang=lang, article_type=article_type, title=title, snapshot=snapshot, headlines=headlines)
     except Exception:
-        return _fallback_article_body(
-            lang=lang,
-            article_type=article_type,
-            title=title,
-            snapshot=snapshot,
-            headlines=headlines,
-        )
+        return _fallback_article_body(lang=lang, article_type=article_type, title=title, snapshot=snapshot, headlines=headlines)
 
 
 def build_daily_news_articles(force_date: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -3676,9 +3681,10 @@ def build_daily_news_articles(force_date: Optional[str] = None) -> List[Dict[str
 
     out: List[Dict[str, Any]] = []
 
-    for article_type, slug_base, title_base in EN_NEWS_TOPICS:
+    for article_type, slug_base, _title_base in EN_NEWS_TOPICS:
         slug = slugify(f"{slug_base}-{day}")
-        title = f"{title_base} {day}"
+        summary = _fallback_news_summary("en", article_type)
+        title = improve_generated_title("en", article_type, day, summary)
         out.append(
             {
                 "id": f"en-{article_type}-{day}",
@@ -3686,14 +3692,8 @@ def build_daily_news_articles(force_date: Optional[str] = None) -> List[Dict[str
                 "lang": "en",
                 "type": article_type,
                 "title": title,
-                "summary": _fallback_news_summary("en", article_type),
-                "content": generate_article_content(
-                    lang="en",
-                    article_type=article_type,
-                    title=title,
-                    snapshot=snapshot,
-                    headlines=headlines,
-                ),
+                "summary": summary,
+                "content": generate_article_content(lang="en", article_type=article_type, title=title, snapshot=snapshot, headlines=headlines),
                 "date": day,
                 "published_at": published_at,
                 "updated_at": published_at,
@@ -3702,9 +3702,10 @@ def build_daily_news_articles(force_date: Optional[str] = None) -> List[Dict[str
             }
         )
 
-    for article_type, slug_base, title_base in NO_NEWS_TOPICS:
+    for article_type, slug_base, _title_base in NO_NEWS_TOPICS:
         slug = slugify(f"{slug_base}-{day}")
-        title = f"{title_base} {day}"
+        summary = _fallback_news_summary("no", article_type)
+        title = improve_generated_title("no", article_type, day, summary)
         out.append(
             {
                 "id": f"no-{article_type}-{day}",
@@ -3712,14 +3713,8 @@ def build_daily_news_articles(force_date: Optional[str] = None) -> List[Dict[str
                 "lang": "no",
                 "type": article_type,
                 "title": title,
-                "summary": _fallback_news_summary("no", article_type),
-                "content": generate_article_content(
-                    lang="no",
-                    article_type=article_type,
-                    title=title,
-                    snapshot=snapshot,
-                    headlines=headlines,
-                ),
+                "summary": summary,
+                "content": generate_article_content(lang="no", article_type=article_type, title=title, snapshot=snapshot, headlines=headlines),
                 "date": day,
                 "published_at": published_at,
                 "updated_at": published_at,
@@ -3735,10 +3730,7 @@ def generate_and_store_daily_news(force_date: Optional[str] = None) -> Dict[str,
     day = force_date or utc_now().date().isoformat()
     existing = get_news_articles()
 
-    existing_same_day = [
-        a for a in existing
-        if str(a.get("date") or "") == day and str(a.get("lang") or "") in ("en", "no")
-    ]
+    existing_same_day = [a for a in existing if str(a.get("date") or "") == day and str(a.get("lang") or "") in ("en", "no")]
     if len(existing_same_day) >= 4:
         return {"ok": True, "generated": 0, "articles": existing_same_day, "message": "ALREADY_GENERATED"}
 
@@ -3750,7 +3742,7 @@ def generate_and_store_daily_news(force_date: Optional[str] = None) -> Dict[str,
 
 
 def render_news_index_page(request: Request, lang: str) -> HTMLResponse:
-    articles = [a for a in get_news_articles() if str(a.get("lang") or "") == lang]
+    articles = [normalize_article_for_display(a) for a in get_news_articles() if str(a.get("lang") or "") == lang]
 
     title = "Gold News and Market Updates" if lang == "en" else "Gullnyheter og markedsoppdateringer"
     desc = (
@@ -3768,13 +3760,17 @@ def render_news_index_page(request: Request, lang: str) -> HTMLResponse:
     items = []
     for article in articles[:80]:
         path = str(article.get("path") or "#")
+        published = format_article_date(str(article.get("published_at") or article.get("date") or ""), lang=lang)
         items.append(
             "<li>"
-            f"<a href=\"{_escape_html(path)}\"><b>{_escape_html(str(article.get('title') or ''))}</b></a><br/>"
-            f"<span class=\"muted\">{_escape_html(str(article.get('summary') or ''))}</span><br/>"
-            f"<span class=\"small\">{_escape_html(str(article.get('published_at') or ''))}</span>"
+            f'<a href="{_escape_html(path)}"><b>{_escape_html(str(article.get("title") or ""))}</b></a><br/>'
+            f'<span class="muted">{_escape_html(str(article.get("summary") or ""))}</span><br/>'
+            f'<span class="small">{_escape_html(published)}</span>'
             "</li>"
         )
+
+    recent_box = render_recent_articles_box(lang=lang)
+    is_en = lang == "en"
 
     body = f"""
     <div class="wrap">
@@ -3804,22 +3800,14 @@ def render_news_index_page(request: Request, lang: str) -> HTMLResponse:
         </div>
       </section>
 
-      {auth_login_box(next_url='/news' if lang == 'en' else '/nyheter')}
-      {key_fallback_box()}
-      {footer_links()}
+      {auth_login_box(next_url='/news' if lang == 'en' else '/nyheter', is_en=is_en)}
+      {key_fallback_box(is_en=is_en)}
+      {recent_box}
+      {footer_links(is_en=is_en)}
     </div>
     """
 
-    return HTMLResponse(
-        html_shell(
-            request,
-            title=title,
-            description=desc,
-            path="/news" if lang == "en" else "/nyheter",
-            body_html=body,
-            lang=lang,
-        )
-    )
+    return HTMLResponse(html_shell(request, title=title, description=desc, path="/news" if lang == "en" else "/nyheter", body_html=body, lang=lang))
 
 
 def _article_content_to_html(text: str) -> str:
@@ -3855,12 +3843,17 @@ def _article_content_to_html(text: str) -> str:
 
 
 def render_news_article_page(request: Request, article: Dict[str, Any]) -> HTMLResponse:
+    article = normalize_article_for_display(article)
+
     lang = "en" if str(article.get("lang") or "") == "en" else "no"
     title = str(article.get("title") or APP_NAME)
     summary = str(article.get("summary") or "")
     path = str(article.get("path") or "/")
-    published_at = str(article.get("published_at") or iso_now())
+    published_at_raw = str(article.get("published_at") or iso_now())
+    published_at_display = format_article_date(published_at_raw, lang=lang)
     content_html = _article_content_to_html(str(article.get("content") or ""))
+    recent_box = render_recent_articles_box(lang=lang, exclude_slug=str(article.get("slug") or ""))
+    is_en = lang == "en"
 
     body = f"""
     <div class="wrap">
@@ -3885,14 +3878,15 @@ def render_news_article_page(request: Request, article: Dict[str, Any]) -> HTMLR
 
       <section class="grid" style="grid-template-columns:1fr">
         <div class="card">
-          <div class="title"><h2>{'Article' if lang == 'en' else 'Artikkel'}</h2><div class="muted">{_escape_html(published_at)}</div></div>
+          <div class="title"><h2>{'Article' if lang == 'en' else 'Artikkel'}</h2><div class="muted">{_escape_html(published_at_display)}</div></div>
           {content_html}
         </div>
       </section>
 
-      {auth_login_box(next_url=path)}
-      {key_fallback_box()}
-      {footer_links()}
+      {auth_login_box(next_url=path, is_en=is_en)}
+      {key_fallback_box(is_en=is_en)}
+      {recent_box}
+      {footer_links(is_en=is_en)}
     </div>
     """
 
@@ -3903,12 +3897,11 @@ def render_news_article_page(request: Request, article: Dict[str, Any]) -> HTMLR
             description=summary or title,
             path=path,
             body_html=body,
-            article_date=published_at[:10] if published_at else None,
+            article_date=published_at_raw[:10] if published_at_raw else None,
             lang=lang,
             extra_jsonld=jsonld_news_article(get_base_url(request), article),
         )
     )
-
 
 # =============================================================================
 # Pages
@@ -3929,7 +3922,7 @@ def index(request: Request) -> HTMLResponse:
     sent = request.query_params.get("sent") == "1"
     sent_email = str(request.query_params.get("email") or "")
 
-    articles = get_latest_articles(3)
+    articles = get_latest_articles(3, lang="no")
 
     items = ""
     for a in articles:
@@ -3941,7 +3934,7 @@ def index(request: Request) -> HTMLResponse:
   <ul>
     {items}
   </ul>
-  <a href="/arkiv">Se hele arkivet</a>
+  <a href="/nyheter">Se alle nyheter</a>
 </div>
 """
 
@@ -3969,9 +3962,7 @@ def index(request: Request) -> HTMLResponse:
         },
     )
 
-    return HTMLResponse(
-        html_shell(request, title=title, description=desc, path="/", body_html=body)
-    )
+    return HTMLResponse(html_shell(request, title=title, description=desc, path="/", body_html=body))
 
 
 @app.get("/premium", response_class=HTMLResponse)
@@ -3982,6 +3973,20 @@ def premium_page(request: Request, session_token: Optional[str] = Cookie(default
     auth = resolve_auth_context(session_token=session_token, x_api_key=None)
     sent = request.query_params.get("sent") == "1"
     sent_email = str(request.query_params.get("email") or "")
+
+    articles = get_latest_articles(3, lang="no")
+    items = ""
+    for a in articles:
+        items += f'<li><a href="{a["url"]}">{_escape_html(a["title"])}</a></li>'
+
+    latest_news_html = f"""
+<div class="newslist">
+  <ul>
+    {items}
+  </ul>
+  <a href="/nyheter">Se alle nyheter</a>
+</div>
+"""
 
     extra_top = ""
     if auth["authenticated"] and auth["premium_active"]:
@@ -4004,6 +4009,7 @@ def premium_page(request: Request, session_token: Optional[str] = Cookie(default
             "__NAV_TABS__": nav_tabs("premium"),
             "__AUTH_BOX__": auth_login_box(next_url="/premium", sent=sent, email=sent_email),
             "__KEY_BOX__": key_fallback_box(),
+            "__LATEST_NEWS__": latest_news_html,
         },
     )
     body = body.replace('<section class="grid">', extra_top + '<section class="grid">', 1)
@@ -4155,9 +4161,7 @@ def archive_day_page(request: Request, day: str) -> HTMLResponse:
 
     title = f"{APP_NAME} arkiv {day} – {sig} | gold price analysis {day}"
     desc = f"{APP_NAME} snapshot {day}: {sig}. {header}. Gullpris analyse og gold price analysis for {day}."
-    return HTMLResponse(
-        html_shell(request, title=title, description=desc, path=f"/archive/{day}", body_html=body, article_date=day)
-    )
+    return HTMLResponse(html_shell(request, title=title, description=desc, path=f"/archive/{day}", body_html=body, article_date=day))
 
 
 @app.get("/success", response_class=HTMLResponse)
@@ -4364,11 +4368,7 @@ def nyheter_article_page(request: Request, slug: str) -> HTMLResponse:
 
 
 @app.post("/auth/request-link")
-async def auth_request_link(
-    request: Request,
-    email: str = Form(...),
-    next_url: str = Form("/archive"),
-):
+async def auth_request_link(request: Request, email: str = Form(...), next_url: str = Form("/archive")):
     email_n = normalize_email(email)
     if "@" not in email_n:
         return HTMLResponse("Ugyldig e-post.", status_code=400)
@@ -4423,13 +4423,7 @@ def kontakt_page(request: Request) -> HTMLResponse:
     <h3>Viktig</h3>
     <p>Innholdet er kun ment som informasjon og markedskommentar. Det er ikke investeringsrådgivning, personlig rådgivning eller en oppfordring til kjøp eller salg av finansielle instrumenter.</p>
     """
-    return legal_page(
-        request,
-        path="/kontakt",
-        title="Kontakt",
-        intro="Kontaktinformasjon for spørsmål om Gullbrief, Premium og tilgang.",
-        content_html=content,
-    )
+    return legal_page(request, path="/kontakt", title="Kontakt", intro="Kontaktinformasjon for spørsmål om Gullbrief, Premium og tilgang.", content_html=content)
 
 
 @app.get("/terms", response_class=HTMLResponse)
@@ -4471,13 +4465,7 @@ def terms_page(request: Request) -> HTMLResponse:
     <h3>Market commentary</h3>
     <p>Analyser, signaler og prognoser er basert på tilgjengelige data, tekniske indikatorer og offentlige nyhetskilder. Disse kan endre seg raskt og skal ikke tolkes som garantier for fremtidig utvikling.</p>
     """
-    return legal_page(
-        request,
-        path="/terms",
-        title="Terms",
-        intro="Vilkår for bruk av Gullbrief og Premium.",
-        content_html=content,
-    )
+    return legal_page(request, path="/terms", title="Terms", intro="Vilkår for bruk av Gullbrief og Premium.", content_html=content)
 
 
 @app.get("/privacy", response_class=HTMLResponse)
@@ -4513,13 +4501,7 @@ def privacy_page(request: Request) -> HTMLResponse:
     <h3>6. Dine rettigheter</h3>
     <p>Du kan be om innsyn, retting eller sletting av opplysninger ved å kontakte oss på <a href="mailto:{_escape_html(CONTACT_EMAIL)}">{_escape_html(CONTACT_EMAIL)}</a>.</p>
     """
-    return legal_page(
-        request,
-        path="/privacy",
-        title="Privacy",
-        intro="Informasjon om hvordan Gullbrief behandler personopplysninger.",
-        content_html=content,
-    )
+    return legal_page(request, path="/privacy", title="Privacy", intro="Informasjon om hvordan Gullbrief behandler personopplysninger.", content_html=content)
 
 
 # =============================================================================
@@ -4640,11 +4622,7 @@ def api_social_daily_post(request: Request, x_api_key: Optional[str] = Header(de
         data = get_cached_brief(force_refresh=False)
         post = build_daily_social_post(data, request)
 
-        result = {
-            "enabled": SOCIAL_DAILY_ENABLED,
-            "configured": x_configured(),
-            "text": post["text"],
-        }
+        result = {"enabled": SOCIAL_DAILY_ENABLED, "configured": x_configured(), "text": post["text"]}
 
         if SOCIAL_DAILY_ENABLED and x_configured():
             send_result = send_social_post(post["text"])
@@ -4715,10 +4693,7 @@ def _already_processed(event_id: str) -> bool:
 
 def _mark_processed(event_id: str, event_type: str) -> None:
     conn = _db()
-    conn.execute(
-        "INSERT OR IGNORE INTO stripe_events(event_id, event_type, created_at) VALUES(?,?,?)",
-        (event_id, event_type, iso_now()),
-    )
+    conn.execute("INSERT OR IGNORE INTO stripe_events(event_id, event_type, created_at) VALUES(?,?,?)", (event_id, event_type, iso_now()))
     conn.commit()
     conn.close()
 
@@ -4754,12 +4729,7 @@ async def api_stripe_webhook(request: Request):
                 or str(data_obj.get("metadata", {}).get("email") or "")
             )
             if customer_id or subscription_id or email:
-                sync_premium_from_stripe(
-                    email=email,
-                    customer_id=customer_id,
-                    subscription_id=subscription_id,
-                    status="active",
-                )
+                sync_premium_from_stripe(email=email, customer_id=customer_id, subscription_id=subscription_id, status="active")
 
         elif event_type in ("customer.subscription.created", "customer.subscription.updated"):
             customer_id = str(data_obj.get("customer") or "")
@@ -4774,12 +4744,7 @@ async def api_stripe_webhook(request: Request):
             except Exception:
                 email = ""
             if customer_id or subscription_id or email:
-                sync_premium_from_stripe(
-                    email=email,
-                    customer_id=customer_id,
-                    subscription_id=subscription_id,
-                    status=mapped,
-                )
+                sync_premium_from_stripe(email=email, customer_id=customer_id, subscription_id=subscription_id, status=mapped)
 
         elif event_type in ("customer.subscription.deleted",):
             customer_id = str(data_obj.get("customer") or "")
@@ -4852,12 +4817,7 @@ def health():
 @app.get("/robots.txt")
 def robots_txt(request: Request):
     base = get_base_url(request)
-    txt = (
-        f"User-agent: *\n"
-        f"Allow: /\n\n"
-        f"Sitemap: {base}/sitemap.xml\n"
-        f"Sitemap: {base}/news-sitemap.xml\n"
-    )
+    txt = f"User-agent: *\nAllow: /\n\nSitemap: {base}/sitemap.xml\nSitemap: {base}/news-sitemap.xml\n"
     return PlainTextResponse(txt)
 
 
@@ -4931,12 +4891,7 @@ def sitemap_xml(request: Request):
         if not p:
             continue
         changefreq = "daily" if p not in ("/premium", "/archive", "/terms", "/privacy", "/kontakt") else "weekly"
-        parts.append(
-            "<url>"
-            f"<loc>{_escape_html(base + p)}</loc>"
-            f"<changefreq>{changefreq}</changefreq>"
-            "</url>"
-        )
+        parts.append("<url>" f"<loc>{_escape_html(base + p)}</loc>" f"<changefreq>{changefreq}</changefreq>" "</url>")
 
     parts.append("</urlset>")
     return Response("".join(parts), media_type="application/xml")
@@ -4953,7 +4908,7 @@ def news_sitemap(request: Request):
     for article in articles[:200]:
         lang = "en" if str(article.get("lang") or "") == "en" else "no"
         path = str(article.get("path") or "")
-        title = str(article.get("title") or APP_NAME)
+        title = str(normalize_article_for_display(article).get("title") or APP_NAME)
         published_at = str(article.get("published_at") or iso_now())
 
         parts.append(
@@ -4986,4 +4941,5 @@ def google_site_verification():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=False)      
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=False)
+
