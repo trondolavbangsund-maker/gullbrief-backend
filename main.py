@@ -1735,9 +1735,9 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
     elif mode == "forecast_en":
         summary = data.get("forecast_en") or data.get("forecast") or data.get("macro_summary") or ""
     elif mode == "xauusd":
-        summary = data.get("xauusd") or data.get("macro_summary") or ""
+        summary = data.get("analysis_no") or data.get("analysis") or data.get("macro_summary") or ""
     else:
-        summary = data.get("analysis") or data.get("macro_summary") or ""
+        summary = data.get("analysis_no") or data.get("analysis") or data.get("macro_summary") or ""
 
     return {
         "updated_at": data.get("updated_at") or iso_now(),
@@ -1971,6 +1971,26 @@ def get_archive_dates(last_n_days: int = 45) -> List[str]:
     dates.sort(reverse=True)
     return dates
 
+def get_latest_articles(limit: int = 3):
+    rows = read_history(limit=50)
+    articles = []
+
+    for r in rows:
+        d = date_yyyy_mm_dd_from_iso_or_rss(str(r.get("updated_at") or ""))
+        if not d:
+            continue
+
+        articles.append({
+            "date": d,
+            "title": f"Gullpris analyse {d}",
+            "url": f"/archive/{d}"
+        })
+
+        if len(articles) >= limit:
+            break
+
+    return articles    
+
 
 def load_snapshot_for_date(day: str) -> Optional[Dict[str, Any]]:
     p = _ensure_history_dir()
@@ -2147,15 +2167,15 @@ def build_news_social_post(article: Dict[str, Any], request: Optional[Request] =
 
 def nav_tabs(active: str) -> str:
     tabs = [
-        ("/gullpris-analyse", "analysis", "📈 Analyse"),
-        ("/gullpris-prognose", "forecast", "🔮 Prognose"),
-        ("/gold-price-forecast", "gold_forecast", "🌍 Gold forecast"),
-        ("/xauusd", "xauusd", "💵 XAUUSD"),
-        ("/gullpris-signal", "signal", "🚦 Signal"),
-        ("/news", "news", "📰 News"),
-        ("/nyheter", "nyheter", "🇳🇴 Nyheter"),
-        ("/premium", "premium", "⭐ Premium"),
-    ]
+    ("/gullpris-analyse", "analysis", "📈 Analyse"),
+    ("/gullpris-prognose", "forecast", "🔮 Prognose"),
+    ("/xauusd", "xauusd", "💵 XAUUSD"),
+    ("/gullpris-signal", "signal", "🚦 Signal"),
+    ("/nyheter", "nyheter", "🇳🇴 Nyheter"),
+    ("/gold-price-forecast", "gold_forecast", "🌍 Forecast"),
+    ("/news", "news", "📰 News"),
+    ("/premium", "premium", "⭐ Premium"),
+]
     links = []
     for href, key, label in tabs:
         cls = "tab active" if key == active else "tab"
@@ -2182,7 +2202,44 @@ def jsonld_website(base: str) -> str:
         },
     }
     return '<script type="application/ld+json">' + json.dumps(data, ensure_ascii=False) + "</script>"
+def translate_headline_to_norwegian(title: str) -> str:
+    if not title:
+        return title
 
+    replacements = [
+        ("Gold price", "Gullpris"),
+        ("gold price", "gullpris"),
+        ("Gold", "Gull"),
+        ("gold", "gull"),
+        ("Oil", "Olje"),
+        ("oil", "olje"),
+        ("Market", "Marked"),
+        ("market", "marked"),
+        ("Markets", "Markeder"),
+        ("markets", "markeder"),
+        ("Inflation", "Inflasjon"),
+        ("inflation", "inflasjon"),
+        ("Dollar", "Dollar"),
+        ("dollar", "dollar"),
+        ("Energy", "Energi"),
+        ("energy", "energi"),
+        ("War", "krig"),
+        ("war", "krig"),
+        ("Rises", "stiger"),
+        ("rises", "stiger"),
+        ("Falls", "faller"),
+        ("falls", "faller"),
+        ("Forecast", "prognose"),
+        ("forecast", "prognose"),
+        ("Update", "oppdatering"),
+        ("update", "oppdatering"),
+    ]
+
+    out = title
+    for src, dst in replacements:
+        out = out.replace(src, dst)
+
+    return out
 
 def jsonld_article(
     base: str,
@@ -2604,20 +2661,22 @@ def premium_feature_box_en() -> str:
     """
 
 
-def auth_login_box(next_url: str = "/archive", sent: bool = False, email: str = "") -> str:
+def auth_login_box(next_url: str = "/archive", sent: bool = False, email: str = "", is_en: bool = False) -> str:
     sent_html = ""
     if sent:
         sent_html = f'<p class="small" style="margin-top:10px">Magic link sendt til {_escape_html(email)} dersom adressen finnes i systemet.</p>'
 
     return f"""
     <div class="authbox">
-      <h3 style="margin:0 0 8px">Logg inn med magic link</h3>
-      <p class="muted" style="margin:0 0 10px">Har du kjøpt Premium? Få innloggingslenke på e-post, uten passord.</p>
+      <h3 style="margin:0 0 8px">{'Log in with magic link' if is_en else 'Logg inn med magic link'}</h3>
+      <p class="muted" style="margin:0 0 10px">
+      {'If you purchased Premium, get a login link sent to your email. No password required.' if is_en else 'Har du kjøpt Premium? Få innloggingslenke på e-post, uten passord.'}
+      </p>
       <form method="post" action="/auth/request-link">
         <input name="email" type="email" placeholder="Din e-post" autocomplete="email" />
         <input type="hidden" name="next_url" value="{_escape_html(next_url)}" />
         <div class="btnrow">
-          <button type="submit">Send magic link</button>
+          <button type="submit">{'Send magic link' if is_en else 'Send magic link'}</button>
         </div>
       </form>
       {sent_html}
@@ -2625,52 +2684,20 @@ def auth_login_box(next_url: str = "/archive", sent: bool = False, email: str = 
     """
 
 
-def key_fallback_box() -> str:
-    return """
-    <div class="keypastebox">
-      <h3 style="margin:0 0 8px">Har du premium-nøkkel?</h3>
-      <p class="muted" style="margin:0 0 10px">Du kan fortsatt lime inn nøkkelen her. Den lagres lokalt i nettleseren.</p>
-      <div class="btnrow">
+def key_fallback_box(is_en: bool = False) -> str:
+    return f"""
+<div class="keystabox">
+    <h3 style="margin:0 0 8px">{'Do you have a premium key?' if is_en else 'Har du premium-nøkkel?'}</h3>
+    <p class="muted" style="margin:0 0 10px">
+        {'You can paste your premium key here.' if is_en else 'Du kan lime inn premium-nøkkelen din her.'}
+    </p>
+
+    <div class="btnrow">
         <input id="globalPremiumKey" placeholder="Premium-nøkkel" autocomplete="off" />
-        <button id="btnSaveGlobalKey">Lagre nøkkel</button>
-        <button id="btnClearGlobalKey">Fjern</button>
-      </div>
-      <div class="small" id="globalKeyStatus" style="margin-top:8px"></div>
+        <button>Lagre nøkkel</button>
     </div>
-    <script>
-      (function(){
-        const LS_KEY = "gullbrief_premium_key";
-        const input = document.getElementById("globalPremiumKey");
-        const saveBtn = document.getElementById("btnSaveGlobalKey");
-        const clearBtn = document.getElementById("btnClearGlobalKey");
-        const status = document.getElementById("globalKeyStatus");
-        if(!input || !saveBtn || !clearBtn || !status) return;
-
-        try{
-          input.value = localStorage.getItem(LS_KEY) || "";
-        }catch(e){}
-
-        saveBtn.addEventListener("click", function(){
-          try{
-            localStorage.setItem(LS_KEY, input.value.trim());
-            status.textContent = "Premium-nøkkel lagret lokalt ✅";
-          }catch(e){
-            status.textContent = "Kunne ikke lagre nøkkel.";
-          }
-        });
-
-        clearBtn.addEventListener("click", function(){
-          try{
-            localStorage.removeItem(LS_KEY);
-            input.value = "";
-            status.textContent = "Premium-nøkkel fjernet.";
-          }catch(e){
-            status.textContent = "Kunne ikke fjerne nøkkel.";
-          }
-        });
-      })();
-    </script>
-    """
+</div>
+"""
 
 INDEX_BODY_TEMPLATE = """
 <div class="wrap">
@@ -2687,9 +2714,9 @@ INDEX_BODY_TEMPLATE = """
   </header>
 
   <section class="hero">
-    <h1>Gullpris i dag – analyse, prognose og signal for gull (XAUUSD)</h1>
-    <p>__DESC__</p>
-  </section>
+<h1>Gullpris i dag 📈 analyse, prognose og signal for gull (XAUUSD)</h1>
+<p>__DESC__</p>
+</section>
 
   __NAV_TABS__
 
@@ -2722,9 +2749,13 @@ INDEX_BODY_TEMPLATE = """
       <ul id="headlines"></ul>
       <div id="premiumNewsHint" class="premiumhint" style="display:none"></div>
     </div>
-  </section>
+</section>
 
-  __FOOTER__
+<section class="card" style="margin-top:16px">
+  __LATEST_NEWS__
+</section>
+
+__FOOTER__
 </div>
 
 <script id="initialTodayData" type="application/json">__INITIAL_JSON__</script>
@@ -2876,7 +2907,10 @@ PREMIUM_BODY_TEMPLATE = """
       </ul>
     </div>
   </section>
-
+    <section class="card" style="margin-top:16px">
+    <h2>Siste artikler</h2>
+    __LATEST_NEWS__
+    </section>
   __FOOTER__
 </div>
 
@@ -3384,8 +3418,8 @@ def seo_landing(
         )
 
     premium_box_html = premium_feature_box_en() if is_en else premium_feature_box()
-    auth_box_html = auth_login_box(next_url=path, sent=sent_magic_link, email=sent_email)
-    key_box_html = key_fallback_box()
+    auth_box_html = auth_login_box(next_url=path, sent=sent_magic_link, email=sent_email, is_en=is_en)
+    key_box_html = key_fallback_box(is_en=is_en)
 
     body = _replace_many(
         SEO_LANDING_TEMPLATE,
@@ -3887,12 +3921,29 @@ def analysis_redirect():
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
-    title = "Gullpris i dag – analyse, prognose og signal for gull (XAUUSD)"
+    title = "Gullpris i dag 📈 analyse, prognose og signal for gull (XAUUSD)"
     desc = "Gullpris i dag med daglig analyse, prognose og signal for gull (XAUUSD). Følg trend, makro og markedssignal."
 
     initial_payload = get_public_today_payload("analysis")
+
     sent = request.query_params.get("sent") == "1"
     sent_email = str(request.query_params.get("email") or "")
+
+    articles = get_latest_articles(3)
+
+    items = ""
+    for a in articles:
+        items += f'<li><a href="{a["url"]}">{_escape_html(a["title"])}</a></li>'
+
+    latest_news_html = f"""
+<div class="newslist">
+  <h3>Siste artikler</h3>
+  <ul>
+    {items}
+  </ul>
+  <a href="/arkiv">Se hele arkivet</a>
+</div>
+"""
 
     body = _replace_many(
         INDEX_BODY_TEMPLATE,
@@ -3902,12 +3953,13 @@ def index(request: Request) -> HTMLResponse:
             "__FOOTER__": footer_links(),
             "__NAV_TABS__": nav_tabs("analysis"),
             "__INITIAL_JSON__": json_for_html(initial_payload),
+            "__LATEST_NEWS__": latest_news_html,
             "__PREMIUM_BOX__": premium_feature_box(),
             "__AUTH_BOX__": auth_login_box(next_url="/", sent=sent, email=sent_email),
             "__KEY_BOX__": key_fallback_box(),
             "__CARD_TITLE__": "Gullpris i dag",
             "__UPDATED_LOADING__": "Oppdaterer…",
-            "__CHANGE_LOADING__": "Endring: –",
+            "__CHANGE_LOADING__": "Endring: ⏳",
             "__UPDATED_LABEL__": "Oppdatert: ",
             "__CHANGE_LABEL__": "Endring: ",
             "__DATE_LOCALE__": "nb-NO",
@@ -3916,7 +3968,10 @@ def index(request: Request) -> HTMLResponse:
             "__PREMIUM_NEWS_HINT__": "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=&quot;/premium&quot;>Åpne Premium</a>",
         },
     )
-    return HTMLResponse(html_shell(request, title=title, description=desc, path="/", body_html=body))
+
+    return HTMLResponse(
+        html_shell(request, title=title, description=desc, path="/", body_html=body)
+    )
 
 
 @app.get("/premium", response_class=HTMLResponse)
