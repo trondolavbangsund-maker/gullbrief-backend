@@ -61,6 +61,7 @@ HISTORY_PATH = os.getenv("HISTORY_PATH", "data/history.jsonl").strip()
 DB_PATH = os.getenv("DB_PATH", "data/app.db").strip()
 PUBLIC_SNAPSHOT_PATH = os.getenv("PUBLIC_SNAPSHOT_PATH", "data/public_snapshot.json").strip()
 NEWS_PATH = os.getenv("NEWS_PATH", "data/news.json").strip()
+NEWS_ARCHIVE_PATH = os.getenv("NEWS_ARCHIVE_PATH", "data/news_archive.jsonl").strip()
 
 ADMIN_API_KEY = os.getenv("PREMIUM_API_KEY", "gullbrief-dev").strip()
 BASE_URL = os.getenv("BASE_URL", "").strip().rstrip("/")
@@ -3587,6 +3588,26 @@ def get_news_articles() -> List[Dict[str, Any]]:
 def save_news_articles(articles: List[Dict[str, Any]]) -> None:
     write_news_store({"articles": articles})
 
+def append_news_archive(articles: List[Dict[str, Any]]) -> None:
+    path = pathlib.Path(NEWS_ARCHIVE_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing_ids = set()
+
+    if path.exists():
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    obj = json.loads(line)
+                    existing_ids.add(str(obj.get("id") or ""))
+                except Exception:
+                    pass
+
+    with path.open("a", encoding="utf-8") as f:
+        for article in articles:
+            article_id = str(article.get("id") or "")
+            if article_id and article_id not in existing_ids:
+                f.write(json.dumps(article, ensure_ascii=False) + "\n")
 
 def dedupe_articles(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     seen = set()
@@ -3821,6 +3842,7 @@ def generate_and_store_daily_news(force_date: Optional[str] = None) -> Dict[str,
     new_articles = build_daily_news_articles(force_date=day)
     merged = dedupe_articles(existing + new_articles)
     save_news_articles(merged)
+    append_news_archive(new_articles)
 
     return {"ok": True, "generated": len(new_articles), "articles": new_articles, "message": "GENERATED"}
 
