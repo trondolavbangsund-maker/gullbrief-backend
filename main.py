@@ -1658,7 +1658,13 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
     elif mode == "xauusd":
         summary = data.get("xauusd") or data.get("analysis") or data.get("macro_summary") or ""
     elif mode == "signal":
-        summary = data.get("signal_reason") or data.get("analysis") or data.get("macro_summary") or ""
+        signal_state = str(data.get("signal") or "neutral").upper()
+        signal_reason = str(data.get("signal_reason") or "").strip()
+
+        if signal_reason:
+            summary = f"Dagens signal er {signal_state}. {signal_reason}"
+        else:
+            summary = f"Dagens signal er {signal_state}. Signalbildet bygger på forholdet mellom pris, trend og glidende snitt."
     else:
         summary = data.get("analysis") or data.get("macro_summary") or ""
 
