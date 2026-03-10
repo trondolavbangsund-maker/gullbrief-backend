@@ -1676,7 +1676,7 @@ def get_public_today_payload(mode: str = "analysis") -> Dict[str, Any]:
     data = get_public_brief(force_build=False)
     return map_to_public_today(data, mode)
 
-    # =============================================================================
+# =============================================================================
 # History
 # =============================================================================
 
@@ -4276,7 +4276,7 @@ def page_gullpris_signal(request: Request) -> HTMLResponse:
         desc="Gullpris signal og gold signal med forklaring. Premium viser signalhistorikk og 7d/30d etter signal.",
         h1="Gullpris signal",
         intro="Se dagens signal og hvorfor det er satt. Premium viser historikk, 7d/30d og treffsikkerhet.",
-        mode="analysis",
+        mode="signal",
         nav_active="signal",
     )
 
