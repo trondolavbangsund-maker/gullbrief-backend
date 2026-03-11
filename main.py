@@ -4194,7 +4194,7 @@ def index(request: Request) -> HTMLResponse:
             "__DATE_LOCALE__": "nb-NO",
             "__HEADLINES_TITLE__": "Relevante nyheter",
             "__HEADLINES_SUB__": "Direkte kilder",
-            "__PREMIUM_NEWS_HINT__": "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=&quot;/premium&quot;>Åpne Premium</a>",
+            "__PREMIUM_NEWS_HINT__": "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=&quot;premium&quot;>Åpne Premium</a>",
         },
     )
 
