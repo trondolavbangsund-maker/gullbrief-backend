@@ -3560,7 +3560,7 @@ def seo_landing(
                 if is_en
                 else
                 "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. "
-                "<a href=&quot;/premium&quot;>Åpne Premium</a>"
+                <a href=&quot;premium&quot;>Åpne Premium</a>
             ),
         },
     )
