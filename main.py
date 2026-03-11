@@ -3559,8 +3559,7 @@ def seo_landing(
                 "<a href=&quot;/premium&quot;>Open Premium</a>"
                 if is_en
                 else
-                "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. "
-                <a href=&quot;premium&quot;>Åpne Premium</a>
+                "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=&quot;premium&quot;>Åpne Premium</a>"
             ),
         },
     )
