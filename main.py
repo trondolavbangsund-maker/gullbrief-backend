@@ -2551,7 +2551,7 @@ def premium_feature_box(resistance=None, support=None) -> str:
         <div class="premiummini"><b>Arkiv + e-postvarsler</b><br/>Følg signalendringer og få den daglige rapporten sendt direkte.</div>
       </div>
       <div class="premiumcta">
-        <a class="goldbtn" href="/premium">Åpne Premium</a>
+        <a class="goldbtn" href="premium">Åpne Premium</a>
         <a class="ghostbtn" href="/archive">Se arkiv</a>
       </div>
     </div>
