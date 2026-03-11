@@ -2538,10 +2538,10 @@ def premium_feature_box(resistance=None, support=None) -> str:
     <div class="premiumbox">
       <h3>⭐ Få hele analysen og neste markedsnivå</h3>
       <p>Få den utvidede rapporten med dypere markedskommentar, tekniske nivåer, scenarioarbeid, flere nyheter og signalhistorikk.</p>
-      <p><strong>Neste tekniske nivåer (Premium)</strong></p>
+      <p><strong>Neste tekniske nivåer </strong></p>
       <p>
-      Motstandsnivå: <b>$${resistance or "52•••"}</b><br>
-      Støttenivå: <b>$${support or "48•••"}</b><br>
+      Motstandsnivå: <b>${resistance or "52•••"}</b><br>
+      Støttenivå: <b>${support or "48•••"}</b><br>
       🔒 Kun tilgjengelig i Premium
       </p>
       <div class="premiumbox-grid">
