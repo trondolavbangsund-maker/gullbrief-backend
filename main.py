@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import math
+import re
 import os
 import pathlib
 import secrets
@@ -240,6 +241,21 @@ def domain_of(url: str) -> str:
         return urlparse(url).netloc.replace("www.", "")
     except Exception:
         return ""
+
+def extract_levels(text: str):
+    support = None
+    resistance = None
+
+    s = re.search(r"Støttenivå.*?([0-9]+\.[0-9]+)", text)
+    r = re.search(r"Motstand.*?([0-9]+\.[0-9]+)", text)
+
+    if s:
+        support = s.group(1)
+
+    if r:
+        resistance = r.group(1)
+
+    return support, resistance
 
 
 def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> Dict[str, Any]:
@@ -2517,11 +2533,17 @@ def footer_links(is_en: bool = False) -> str:
     """
 
 
-def premium_feature_box() -> str:
-    return """
+def premium_feature_box(resistance=None, support=None) -> str:
+    return f"""
     <div class="premiumbox">
-      <h3>⭐ Premium gir mer enn bare litt ekstra tekst</h3>
+      <h3>⭐ Få hele analysen og neste markedsnivå</h3>
       <p>Få den utvidede rapporten med dypere markedskommentar, tekniske nivåer, scenarioarbeid, flere nyheter og signalhistorikk.</p>
+      <p><strong>Neste tekniske nivåer (Premium)</strong></p>
+      <p>
+      Motstandsnivå: <b>$${resistance or "52•••"}</b><br>
+      Støttenivå: <b>$${support or "48•••"}</b><br>
+      🔒 Kun tilgjengelig i Premium
+      </p>
       <div class="premiumbox-grid">
         <div class="premiummini"><b>Utvidet premium-rapport</b><br/>Vesentlig lengre og mer utfyllende enn gratisanalysen.</div>
         <div class="premiummini"><b>Signalhistorikk</b><br/>Se hvordan tidligere bullish og bearish signaler utviklet seg etter 7 og 30 dager.</div>
@@ -3493,7 +3515,7 @@ def seo_landing(
             str(initial_payload["signal"].get("reason_short") or "")
         )
 
-    premium_box_html = premium_feature_box_en() if is_en else premium_feature_box()
+    premium_box_html = premium_feature_box_en() if is_en else premium_feature_box("52•••", "48•••")
 
     auth_box_html = auth_login_box(
         next_url=path,
