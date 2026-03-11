@@ -3629,6 +3629,50 @@ def get_news_article_by_slug(lang: str, slug: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def get_news_articles_by_lang(lang: str) -> List[Dict[str, Any]]:
+    return [a for a in get_news_articles() if str(a.get("lang") or "") == lang]
+
+
+def filter_articles_by_year(articles: List[Dict[str, Any]], year: str) -> List[Dict[str, Any]]:
+    return [a for a in articles if str(a.get("date") or "").startswith(f"{year}-")]
+
+
+def filter_articles_by_month(articles: List[Dict[str, Any]], year: str, month: str) -> List[Dict[str, Any]]:
+    return [a for a in articles if str(a.get("date") or "").startswith(f"{year}-{month}-")]
+
+
+def filter_articles_by_day(articles: List[Dict[str, Any]], year: str, month: str, day: str) -> List[Dict[str, Any]]:
+    return [a for a in articles if str(a.get("date") or "") == f"{year}-{month}-{day}"]
+
+
+def unique_news_years(lang: str) -> List[str]:
+    years = set()
+    for a in get_news_articles_by_lang(lang):
+        d = str(a.get("date") or "")
+        if len(d) >= 4:
+            years.add(d[:4])
+    return sorted(years, reverse=True)
+
+
+def unique_news_months(lang: str, year: str) -> List[str]:
+    months = set()
+    for a in get_news_articles_by_lang(lang):
+        d = str(a.get("date") or "")
+        if d.startswith(f"{year}-") and len(d) >= 7:
+            months.add(d[:7])
+    return sorted(months, reverse=True)
+
+
+def unique_news_days(lang: str, year: str, month: str) -> List[str]:
+    days = set()
+    prefix = f"{year}-{month}-"
+    for a in get_news_articles_by_lang(lang):
+        d = str(a.get("date") or "")
+        if d.startswith(prefix) and len(d) == 10:
+            days.add(d)
+    return sorted(days, reverse=True)
+
+
 def _headline_titles(headlines: List[Dict[str, str]], limit: int = 8) -> List[str]:
     out = []
     for h in headlines[:limit]:
@@ -3876,6 +3920,11 @@ def render_news_index_page(request: Request, lang: str) -> HTMLResponse:
         )
 
     recent_box = render_recent_articles_box(lang=lang)
+    years = unique_news_years(lang)
+    archive_links = "".join(
+        f'<li><a href="/{"news" if lang == "en" else "nyheter"}/{y}">{_escape_html(y)}</a></li>'
+        for y in years
+    )
     is_en = lang == "en"
 
     body = f"""
@@ -3915,6 +3964,58 @@ def render_news_index_page(request: Request, lang: str) -> HTMLResponse:
 
     return HTMLResponse(html_shell(request, title=title, description=desc, path="/news" if lang == "en" else "/nyheter", body_html=body, lang=lang))
 
+def render_news_archive_list(
+    *,
+    request: Request,
+    lang: str,
+    title: str,
+    intro: str,
+    items_html: str,
+    path: str,
+) -> HTMLResponse:
+    is_en = lang == "en"
+
+    body = f"""
+    <div class="wrap">
+      <header>
+        <div class="brand"><a href="/">{_escape_html(APP_NAME)}</a></div>
+        <div class="nav">
+          <a href="/">Analyse</a>
+          <a href="/gullpris">Gullpris</a>
+          <a href="/archive">Arkiv</a>
+          <a href="/news">News</a>
+          <a href="/nyheter">Nyheter</a>
+          <a class="cta" href="/premium">Premium</a>
+        </div>
+      </header>
+
+      <section class="hero">
+        <h1>{_escape_html(title)}</h1>
+        <p>{_escape_html(intro)}</p>
+      </section>
+
+      {nav_tabs("news" if is_en else "nyheter")}
+
+      <section class="grid" style="grid-template-columns:1fr">
+        <div class="card">
+          <ul>{items_html}</ul>
+        </div>
+      </section>
+
+      {footer_links(is_en=is_en)}
+    </div>
+    """
+
+    return HTMLResponse(
+        html_shell(
+            request,
+            title=title,
+            description=intro,
+            path=path,
+            body_html=body,
+            lang=lang,
+        )
+    )
 
 def _article_content_to_html(text: str) -> str:
     lines = [line.rstrip() for line in (text or "").splitlines()]
@@ -3988,6 +4089,13 @@ def render_news_article_page(request: Request, article: Dict[str, Any]) -> HTMLR
           {content_html}
         </div>
       </section>
+
+      <section class="grid" style="grid-template-columns:1fr">
+  <div class="card">
+    <div class="title"><h2>{'Archive' if lang == 'en' else 'Arkiv'}</h2><div class="muted">{len(years)} {'years' if lang == 'en' else 'år'}</div></div>
+    <ul>{archive_links if archive_links else ('<li>No archive years yet.</li>' if lang == 'en' else '<li>Ingen arkivår ennå.</li>')}</ul>
+  </div>
+</section>
 
       {auth_login_box(next_url=path, is_en=is_en)}
       {key_fallback_box(is_en=is_en)}
@@ -4459,6 +4567,170 @@ def news_index_page(request: Request) -> HTMLResponse:
 def nyheter_index_page(request: Request) -> HTMLResponse:
     return render_news_index_page(request, "no")
 
+@app.get("/news/{year}", response_class=HTMLResponse)
+def news_year_page(request: Request, year: str) -> HTMLResponse:
+    if not (len(year) == 4 and year.isdigit()):
+        return HTMLResponse("Not found", status_code=404)
+
+    months = unique_news_months("en", year)
+    if not months:
+        return HTMLResponse("Not found", status_code=404)
+
+    items = []
+    for ym in months:
+        y, m = ym.split("-")
+        items.append(f'<li><a href="/news/{y}/{m}">{_escape_html(ym)}</a></li>')
+
+    return render_news_archive_list(
+        request=request,
+        lang="en",
+        title=f"Gold News Archive {year}",
+        intro=f"Monthly archive for gold news and analysis published in {year}.",
+        items_html="".join(items),
+        path=f"/news/{year}",
+    )
+
+
+@app.get("/news/{year}/{month}", response_class=HTMLResponse)
+def news_month_page(request: Request, year: str, month: str) -> HTMLResponse:
+    if not (len(year) == 4 and year.isdigit() and len(month) == 2 and month.isdigit()):
+        return HTMLResponse("Not found", status_code=404)
+
+    days = unique_news_days("en", year, month)
+    if not days:
+        return HTMLResponse("Not found", status_code=404)
+
+    items = []
+    for d in days:
+        y, m, day = d.split("-")
+        items.append(f'<li><a href="/news/{y}/{m}/{day}">{_escape_html(d)}</a></li>')
+
+    return render_news_archive_list(
+        request=request,
+        lang="en",
+        title=f"Gold News Archive {year}-{month}",
+        intro=f"Daily archive for gold news and analysis published in {year}-{month}.",
+        items_html="".join(items),
+        path=f"/news/{year}/{month}",
+    )
+
+
+@app.get("/news/{year}/{month}/{day}", response_class=HTMLResponse)
+def news_day_page(request: Request, year: str, month: str, day: str) -> HTMLResponse:
+    if not (
+        len(year) == 4 and year.isdigit() and
+        len(month) == 2 and month.isdigit() and
+        len(day) == 2 and day.isdigit()
+    ):
+        return HTMLResponse("Not found", status_code=404)
+
+    articles = [normalize_article_for_display(a) for a in filter_articles_by_day(get_news_articles_by_lang("en"), year, month, day)]
+    if not articles:
+        return HTMLResponse("Not found", status_code=404)
+
+    items = []
+    for article in articles:
+        path = str(article.get("path") or "#")
+        title_txt = str(article.get("title") or "")
+        summary = str(article.get("summary") or "")
+        items.append(
+            "<li>"
+            f'<a href="{_escape_html(path)}"><b>{_escape_html(title_txt)}</b></a><br/>'
+            f'<span class="muted">{_escape_html(summary)}</span>'
+            "</li>"
+        )
+
+    return render_news_archive_list(
+        request=request,
+        lang="en",
+        title=f"Gold News for {year}-{month}-{day}",
+        intro=f"Gold news and analysis published on {year}-{month}-{day}.",
+        items_html="".join(items),
+        path=f"/news/{year}/{month}/{day}",
+    )
+
+
+@app.get("/nyheter/{year}", response_class=HTMLResponse)
+def nyheter_year_page(request: Request, year: str) -> HTMLResponse:
+    if not (len(year) == 4 and year.isdigit()):
+        return HTMLResponse("Not found", status_code=404)
+
+    months = unique_news_months("no", year)
+    if not months:
+        return HTMLResponse("Not found", status_code=404)
+
+    items = []
+    for ym in months:
+        y, m = ym.split("-")
+        items.append(f'<li><a href="/nyheter/{y}/{m}">{_escape_html(ym)}</a></li>')
+
+    return render_news_archive_list(
+        request=request,
+        lang="no",
+        title=f"Gullnyheter arkiv {year}",
+        intro=f"Månedsarkiv for gullnyheter og analyser publisert i {year}.",
+        items_html="".join(items),
+        path=f"/nyheter/{year}",
+    )
+
+
+@app.get("/nyheter/{year}/{month}", response_class=HTMLResponse)
+def nyheter_month_page(request: Request, year: str, month: str) -> HTMLResponse:
+    if not (len(year) == 4 and year.isdigit() and len(month) == 2 and month.isdigit()):
+        return HTMLResponse("Not found", status_code=404)
+
+    days = unique_news_days("no", year, month)
+    if not days:
+        return HTMLResponse("Not found", status_code=404)
+
+    items = []
+    for d in days:
+        y, m, day = d.split("-")
+        items.append(f'<li><a href="/nyheter/{y}/{m}/{day}">{_escape_html(d)}</a></li>')
+
+    return render_news_archive_list(
+        request=request,
+        lang="no",
+        title=f"Gullnyheter arkiv {year}-{month}",
+        intro=f"Dagsarkiv for gullnyheter og analyser publisert i {year}-{month}.",
+        items_html="".join(items),
+        path=f"/nyheter/{year}/{month}",
+    )
+
+
+@app.get("/nyheter/{year}/{month}/{day}", response_class=HTMLResponse)
+def nyheter_day_page(request: Request, year: str, month: str, day: str) -> HTMLResponse:
+    if not (
+        len(year) == 4 and year.isdigit() and
+        len(month) == 2 and month.isdigit() and
+        len(day) == 2 and day.isdigit()
+    ):
+        return HTMLResponse("Not found", status_code=404)
+
+    articles = [normalize_article_for_display(a) for a in filter_articles_by_day(get_news_articles_by_lang("no"), year, month, day)]
+    if not articles:
+        return HTMLResponse("Not found", status_code=404)
+
+    items = []
+    for article in articles:
+        path = str(article.get("path") or "#")
+        title_txt = str(article.get("title") or "")
+        summary = str(article.get("summary") or "")
+        items.append(
+            "<li>"
+            f'<a href="{_escape_html(path)}"><b>{_escape_html(title_txt)}</b></a><br/>'
+            f'<span class="muted">{_escape_html(summary)}</span>'
+            "</li>"
+        )
+
+    return render_news_archive_list(
+        request=request,
+        lang="no",
+        title=f"Gullnyheter for {year}-{month}-{day}",
+        intro=f"Gullnyheter og analyser publisert {year}-{month}-{day}.",
+        items_html="".join(items),
+        path=f"/nyheter/{year}/{month}/{day}",
+    )
 
 @app.get("/news/{slug}", response_class=HTMLResponse)
 def news_article_page(request: Request, slug: str) -> HTMLResponse:
@@ -5104,19 +5376,42 @@ def sitemap_xml(request: Request):
 
     archive_urls = [f"/archive/{d}" for d in get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)]
     news_urls = [str(a.get("path") or "") for a in get_news_articles() if str(a.get("path") or "")]
+    archive_news_urls = []
+
+    for lang_prefix, lang_code in [("/news", "en"), ("/nyheter", "no")]:
+        years = unique_news_years(lang_code)
+
+        for year in years:
+            archive_news_urls.append(f"{lang_prefix}/{year}")
+
+            months = unique_news_months(lang_code, year)
+
+            for ym in months:
+                y, m = ym.split("-")
+                archive_news_urls.append(f"{lang_prefix}/{y}/{m}")
+
+                days = unique_news_days(lang_code, y, m)
+
+                for d in days:
+                    yy, mm, dd = d.split("-")
+                    archive_news_urls.append(f"{lang_prefix}/{yy}/{mm}/{dd}")
 
     parts = ['<?xml version="1.0" encoding="UTF-8"?>']
     parts.append('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">')
 
-    for p in static_urls + archive_urls + news_urls:
+    for p in static_urls + archive_urls + news_urls + archive_news_urls:
         if not p:
             continue
         changefreq = "daily" if p not in ("/premium", "/archive", "/terms", "/privacy", "/kontakt") else "weekly"
-        parts.append("<url>" f"<loc>{_escape_html(base + p)}</loc>" f"<changefreq>{changefreq}</changefreq>" "</url>")
+        parts.append(
+            "<url>"
+            f"<loc>{_escape_html(base + p)}</loc>"
+            f"<changefreq>{changefreq}</changefreq>"
+            "</url>"
+        )
 
     parts.append("</urlset>")
     return Response("".join(parts), media_type="application/xml")
-
 
 @app.get("/news-sitemap.xml")
 def news_sitemap(request: Request):
