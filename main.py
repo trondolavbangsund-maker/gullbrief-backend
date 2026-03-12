@@ -242,6 +242,20 @@ def domain_of(url: str) -> str:
     except Exception:
         return ""
 
+def load_news_archive():
+    path = "data/news_archive.jsonl"
+    items = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    items.append(json.loads(line))
+                except Exception:
+                    pass
+    except FileNotFoundError:
+        pass
+    return items
+
 def extract_levels(text: str):
     support = None
     resistance = None
@@ -3913,7 +3927,7 @@ def generate_and_store_daily_news(force_date: Optional[str] = None) -> Dict[str,
 
 
 def render_news_index_page(request: Request, lang: str) -> HTMLResponse:
-    articles = [normalize_article_for_display(a) for a in get_news_articles() if str(a.get("lang") or "") == lang]
+    articles = [normalize_article_for_display(a) for a in load_news_archive() if str(a.get("lang") or "") == lang]
 
     title = "Gold News and Market Updates" if lang == "en" else "Gullnyheter og markedsoppdateringer"
     desc = (
@@ -4113,8 +4127,8 @@ def render_news_article_page(request: Request, article: Dict[str, Any]) -> HTMLR
 
       <section class="grid" style="grid-template-columns:1fr">
   <div class="card">
-    <div class="title"><h2>{'Archive' if lang == 'en' else 'Arkiv'}</h2><div class="muted">{len(years)} {'years' if lang == 'en' else 'år'}</div></div>
-    <ul>{archive_links if archive_links else ('<li>No archive years yet.</li>' if lang == 'en' else '<li>Ingen arkivår ennå.</li>')}</ul>
+    <div class="title"><h2>{'Archive' if lang == 'en' else 'Arkiv'}</h2><div class="muted">{'News article' if lang == 'en' else 'Nyhetsartikkel'}</div></div>
+    <ul><li><a href="/{'news' if lang == 'en' else 'nyheter'}">{'Back to news' if lang == 'en' else 'Tilbake til nyheter'}</a></li></ul>
   </div>
 </section>
 
@@ -4588,6 +4602,42 @@ def news_index_page(request: Request) -> HTMLResponse:
 def nyheter_index_page(request: Request) -> HTMLResponse:
     return render_news_index_page(request, "no")
 
+
+@app.get("/news/{slug}", response_class=HTMLResponse)
+def news_article_page(request: Request, slug: str) -> HTMLResponse:
+    article = get_news_article_by_slug("en", slug)
+    if not article:
+        return HTMLResponse(
+            html_shell(
+                request,
+                title=f"{APP_NAME} – News",
+                description="Article not found.",
+                path=f"/news/{slug}",
+                body_html="<div class='wrap'><div class='card'>Article not found.</div></div>",
+                lang="en",
+            ),
+            status_code=404,
+        )
+    return render_news_article_page(request, article)
+
+
+@app.get("/nyheter/{slug}", response_class=HTMLResponse)
+def nyheter_article_page(request: Request, slug: str) -> HTMLResponse:
+    article = get_news_article_by_slug("no", slug)
+    if not article:
+        return HTMLResponse(
+            html_shell(
+                request,
+                title=f"{APP_NAME} – Nyheter",
+                description="Artikkel ikke funnet.",
+                path=f"/nyheter/{slug}",
+                body_html="<div class='wrap'><div class='card'>Artikkel ikke funnet.</div></div>",
+            ),
+            status_code=404,
+        )
+    return render_news_article_page(request, article)
+
+
 @app.get("/news/{year}", response_class=HTMLResponse)
 def news_year_page(request: Request, year: str) -> HTMLResponse:
     if not (len(year) == 4 and year.isdigit()):
@@ -4752,40 +4802,6 @@ def nyheter_day_page(request: Request, year: str, month: str, day: str) -> HTMLR
         items_html="".join(items),
         path=f"/nyheter/{year}/{month}/{day}",
     )
-
-@app.get("/news/{slug}", response_class=HTMLResponse)
-def news_article_page(request: Request, slug: str) -> HTMLResponse:
-    article = get_news_article_by_slug("en", slug)
-    if not article:
-        return HTMLResponse(
-            html_shell(
-                request,
-                title=f"{APP_NAME} – News",
-                description="Article not found.",
-                path=f"/news/{slug}",
-                body_html="<div class='wrap'><div class='card'>Article not found.</div></div>",
-                lang="en",
-            ),
-            status_code=404,
-        )
-    return render_news_article_page(request, article)
-
-
-@app.get("/nyheter/{slug}", response_class=HTMLResponse)
-def nyheter_article_page(request: Request, slug: str) -> HTMLResponse:
-    article = get_news_article_by_slug("no", slug)
-    if not article:
-        return HTMLResponse(
-            html_shell(
-                request,
-                title=f"{APP_NAME} – Nyheter",
-                description="Artikkel ikke funnet.",
-                path=f"/nyheter/{slug}",
-                body_html="<div class='wrap'><div class='card'>Artikkel ikke funnet.</div></div>",
-            ),
-            status_code=404,
-        )
-    return render_news_article_page(request, article)
 
 
 @app.post("/auth/request-link")
