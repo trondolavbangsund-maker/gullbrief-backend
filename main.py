@@ -1691,15 +1691,30 @@ def summarize_bundle_with_openai(
     ts_line = f"{trend_score}" if isinstance(trend_score, int) else "ukjent"
 
     prompt = (
-        f"Du er {APP_NAME}. Du skal skrive fem forskjellige tekster om gull basert på overskriftene.\n"
-        "Viktig:\n"
-        "- Norsk, nøkternt, ingen emojis, ingen investeringsråd.\n"
+        f"Du er {APP_NAME}. Du skriver korte, publiserbare markedstekster om gull for et finansnettsted.\n"
+        "Viktig stil:\n"
+        "- Skriv klart, konkret og nøkternt.\n"
+        "- Skriv som en stram markedsredaktør, ikke som en meglerpresentasjon eller en AI-oppsummering.\n"
+        "- Bruk korte og mellomlange setninger.\n"
+        "- Ikke gjenta samme poeng med nye ord.\n"
+        "- Hver tekst skal ha ett tydelig hovedpoeng.\n"
+        "- Vær konkret om pris, signal, nivåer og drivere.\n"
+        "- Ikke finn opp fakta. Hvis noe er uklart, si det tydelig.\n"
         "- forecast_en skal være på engelsk.\n"
-        "- Ikke finn opp fakta. Hvis overskriftene ikke støtter noe, si uklart eller ikke bekreftet.\n"
-        "- Gratis analyse, forecast og xauusd skal være omtrent like lange som før.\n"
-        "- Premium skal være klart lengre, mer detaljert og mer analytisk enn gratisdelen.\n"
-        "- Svar KUN som gyldig JSON med nøyaktig disse nøklene:\n"
+        "- premium skal være klart mer innsiktsfull og mer verdifull enn gratisdelene.\n\n"
+
+        "Unngå disse formuleringene:\n"
+        "- 'markedet preges av'\n"
+        "- 'alt i alt'\n"
+        "- 'det er viktig å merke seg'\n"
+        "- 'forblir en nøkkelressurs'\n"
+        "- 'i et klima preget av'\n"
+        "- 'kan indikere' når du heller kan skrive mer direkte\n"
+        "- generelle og oppblåste formuleringer uten konkret innhold\n\n"
+
+        "Svar KUN som gyldig JSON med nøyaktig disse nøklene:\n"
         '{"analysis":"...", "forecast":"...", "forecast_en":"...", "xauusd":"...", "premium":"..."}\n\n'
+
         "Kontekst:\n"
         f"- Symbol: {YAHOO_SYMBOL}\n"
         f"- Pris: {price_line}\n"
@@ -1715,11 +1730,13 @@ def summarize_bundle_with_openai(
         f"- SMA20: {fmt_level(levels.get('sma20'))}\n"
         f"- SMA50: {fmt_level(levels.get('sma50'))}\n\n"
         "Overskrifter:\n- " + "\n- ".join(titles) + "\n\n"
-        "Skriv:\n"
-        "- analysis: 10–14 linjer på norsk, tydelig mer utfyllende enn en kort oppsummering.\n"
-        "- forecast: 10–14 linjer på norsk med base/bull/bear og litt mer forklaring på drivere og nivåer.\n"
-        "- forecast_en: 8–12 lines in English, clearly more detailed than a brief note.\n"
-        "- premium: 26–40 linjer på norsk med tydelig struktur.\n"
+
+        "Skriv slik:\n"
+        "- analysis: 9–12 linjer på norsk. Struktur: hva gjorde gull i dag, viktigste driver nå, teknisk bilde, hva må følges videre.\n"
+        "- forecast: 9–12 linjer på norsk. Struktur: base, bull og bear, med tydelige drivere og nivåer.\n"
+        "- forecast_en: 7–10 lines in English. Clear, specific and publication-ready.\n"
+        "- xauusd: 7–10 linjer på norsk med tydelig fokus på USD, renter, nivåer og markedsdrivere.\n"
+        "- premium: 20–30 linjer på norsk. Mer analytisk, mer konkret og mer nyttig enn gratistekstene. Bruk tydelige mellompoeng, men ikke overdriv formelt språk.\n"
     )
 
     try:
@@ -4249,12 +4266,30 @@ def generate_article_content(
 
     if lang == "en":
         language_instruction = "Write in English."
-        style_instruction = "Write a news-style gold market article." if article_type == "news" else "Write an analysis-style gold market article."
+        if article_type == "analysis":
+            style_instruction = (
+                "Write a sharp, publication-ready gold market analysis. "
+                "Explain what changed today, why it matters, and what traders should watch next."
+            )
+        else:
+            style_instruction = (
+                "Write a news-driven gold market article. "
+                "Focus on today's most important development and explain why it matters for gold."
+            )
         extra_context = f"Forecast: {forecast_en}\nXAUUSD context: {xauusd}\n"
         cta = "Full analysis and signal update:\nhttps://gullbrief.no/premium"
     else:
         language_instruction = "Skriv på norsk bokmål."
-        style_instruction = "Skriv en nyhetspreget markedssak om gull." if article_type == "news" else "Skriv en analysepreget markedssak om gull."
+        if article_type == "analysis":
+            style_instruction = (
+                "Skriv en skarp og publiserbar gullanalyse. "
+                "Forklar hva som har skjedd i dag, hvorfor det betyr noe, og hva markedet bør følge videre."
+            )
+        else:
+            style_instruction = (
+                "Skriv en nyhetsdrevet markedssak om gull. "
+                "Ta utgangspunkt i dagens viktigste utvikling og forklar hvorfor den betyr noe for gullprisen."
+            )
         extra_context = f"Forecast: {forecast}\nXAUUSD context: {xauusd}\n"
         cta = "Full analyse og signaloppdatering:\nhttps://gullbrief.no/premium"
 
@@ -4268,12 +4303,30 @@ def generate_article_content(
         f"Analysegrunnlag: {analysis or 'No extra analysis'}\n"
         f"{extra_context}\n"
         f"Overskrifter:\n{titles_block}\n\n"
+
+        "Skriv som en markedsredaktør for et finansnettsted.\n"
+        "Teksten skal være publiserbar, konkret og lett å lese.\n"
+        "Ikke skriv som en AI-oppsummering, meglertekst eller generell markedsrapport.\n"
+        "Bruk korte og mellomlange setninger.\n"
+        "Bygg teksten rundt ett tydelig hovedpoeng.\n"
+        "Bruk 2 til 4 konkrete observasjoner fra dagens pris, signal, nivåer eller overskrifter.\n"
+        "Ikke gjenta samme idé med nye ord.\n"
+        "Ikke bruk generiske formuleringer som:\n"
+        "- markedet preges av\n"
+        "- alt i alt\n"
+        "- det er viktig å merke seg\n"
+        "- forblir en nøkkelressurs\n"
+        "- i et klima preget av\n\n"
+
         "Krav:\n"
-        "- 500 til 900 ord\n"
+        "- 500 til 800 ord\n"
         "- bruk mellomtitler\n"
+        "- vær tydelig på hvorfor dagens utvikling betyr noe for gull\n"
         "- hold deg til tilgjengelig kontekst\n"
         "- ikke skriv investeringsråd\n"
-        "- bruk en klar avslutning\n"
+        "- unngå oppstyltet språk\n"
+        "- teksten skal føles skrevet av et menneske med markedsforståelse\n"
+        "- avslutt med en kort, konkret konklusjon\n"
         "- avslutt alltid med nøyaktig denne CTA-en:\n"
         f"{cta}\n"
     )
