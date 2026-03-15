@@ -28,10 +28,11 @@ from fastapi.staticfiles import StaticFiles
 
 
 # =============================================================================
-# Gullbrief main.py – v4.3
+# Gullbrief main.py – v4.4
 # - Bevarer eksisterende snapshot/history/signal/Stripe/X/logikk
-# - Fikser språk på engelsk side, datoformat, nyere artikkelboks og key-boks styling
-# - Bruker nyhetsmotoren som kilde for "siste artikler"
+# - Legger til eToro affiliate-bokser på utvalgte sider
+# - Legger til nye trade gold-sider (NO/EN)
+# - Forbedrer robust arkiv-/news-fallback ved deploy
 # =============================================================================
 
 
@@ -40,7 +41,7 @@ from fastapi.staticfiles import StaticFiles
 # =============================================================================
 
 APP_NAME = os.getenv("APP_NAME", "Gullbrief").strip()
-APP_VERSION = "4.3"
+APP_VERSION = "4.4"
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip()
@@ -110,6 +111,25 @@ NEWS_DAILY_ENABLED = os.getenv("NEWS_DAILY_ENABLED", "true").strip().lower() == 
 NEWS_PUBLISHER_NAME = os.getenv("NEWS_PUBLISHER_NAME", APP_NAME).strip() or APP_NAME
 NEWS_DEFAULT_AUTHOR = os.getenv("NEWS_DEFAULT_AUTHOR", APP_NAME).strip() or APP_NAME
 NEWS_PUBLISHER_LOGO = os.getenv("NEWS_PUBLISHER_LOGO", "/static/apple-touch-icon.png").strip() or "/static/apple-touch-icon.png"
+
+ETORO_AFFILIATE_NO = os.getenv(
+    "ETORO_AFFILIATE_NO",
+    "https://med.etoro.com/B7987_A128914_TClick_Sgullbrief_no.aspx",
+).strip()
+
+ETORO_AFFILIATE_EN = os.getenv(
+    "ETORO_AFFILIATE_EN",
+    "https://med.etoro.com/B12087_A128914_TClick_Sgullbrief_en.aspx",
+).strip()
+
+AFFILIATE_DISCLAIMER_NO = (
+    "Noen lenker på denne siden kan være affiliate-lenker. Vi kan motta provisjon dersom du registrerer deg via dem. "
+    "Trading innebærer risiko og passer ikke for alle investorer."
+)
+AFFILIATE_DISCLAIMER_EN = (
+    "Some links on this site may be affiliate links. We may receive a commission if you register through them. "
+    "Trading involves risk and may not be suitable for all investors."
+)
 
 PRIMARY_KEYWORDS = [
     "gold",
@@ -201,7 +221,6 @@ app.add_middleware(
 
 try:
     from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware  # type: ignore
-
     app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 except Exception:
     pass
@@ -242,19 +261,6 @@ def domain_of(url: str) -> str:
     except Exception:
         return ""
 
-def load_news_archive():
-    path = "data/news_archive.jsonl"
-    items = []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                try:
-                    items.append(json.loads(line))
-                except Exception:
-                    pass
-    except FileNotFoundError:
-        pass
-    return items
 
 def extract_levels(text: str):
     support = None
@@ -265,7 +271,6 @@ def extract_levels(text: str):
 
     if s:
         support = s.group(1)
-
     if r:
         resistance = r.group(1)
 
@@ -281,7 +286,7 @@ def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: i
 
 def http_get_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 25) -> str:
     h = headers or {}
-    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/4.3)")
+    h.setdefault("User-Agent", "Mozilla/5.0 (compatible; Gullbrief/4.4)")
     h.setdefault("Accept", "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1")
     r = requests.get(url, headers=h, timeout=timeout, allow_redirects=True)
     r.raise_for_status()
@@ -776,6 +781,290 @@ def init_db() -> None:
     conn.close()
 
 
+# =============================================================================
+# History + news file helpers
+# =============================================================================
+
+def _ensure_history_dir() -> pathlib.Path:
+    p = pathlib.Path(HISTORY_PATH)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _read_jsonl_objects(path_str: str) -> List[Dict[str, Any]]:
+    p = pathlib.Path(path_str)
+    if not p.exists():
+        return []
+
+    items: List[Dict[str, Any]] = []
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if isinstance(obj, dict):
+                        items.append(obj)
+                except Exception:
+                    continue
+    except Exception:
+        return []
+
+    return items
+
+
+def load_news_archive() -> List[Dict[str, Any]]:
+    return _read_jsonl_objects(NEWS_ARCHIVE_PATH)
+
+
+def _read_last_snapshot() -> Optional[Dict[str, Any]]:
+    p = _ensure_history_dir()
+    if not p.exists():
+        return None
+    try:
+        with p.open("rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            if size == 0:
+                return None
+            f.seek(max(0, size - 16384), 0)
+            tail = f.read().decode("utf-8", errors="replace").splitlines()
+            for line in reversed(tail):
+                line = line.strip()
+                if line:
+                    return json.loads(line)
+    except Exception:
+        return None
+    return None
+
+
+def _should_store_snapshot(new_data: Dict[str, Any], last: Optional[Dict[str, Any]]) -> bool:
+    if last is None:
+        return True
+
+    new_signal = (new_data.get("signal") or "").lower()
+    last_signal = (last.get("signal") or "").lower()
+    if new_signal and new_signal != last_signal:
+        return True
+
+    new_dt = parse_iso_or_rss(new_data.get("updated_at", "")) or datetime.now(timezone.utc)
+    last_dt = parse_iso_or_rss(last.get("updated_at", "")) or datetime.now(timezone.utc)
+    return new_dt.date() != last_dt.date()
+
+def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
+    p = _ensure_history_dir()
+    last = _read_last_snapshot()
+    if not _should_store_snapshot(data, last):
+        return False
+
+    rep = premium_report_ai_from_bundle(
+        bundle={
+            "premium": (data.get("premium_insight") or ""),
+            "analysis": (data.get("analysis") or data.get("macro_summary") or ""),
+            "forecast": (data.get("forecast") or ""),
+            "xauusd": (data.get("xauusd") or ""),
+        },
+        signal_state=str(data.get("signal") or "neutral"),
+        signal_reason=str(data.get("signal_reason") or ""),
+        price_usd=safe_float(data.get("price_usd")),
+        change_pct=safe_float(data.get("change_pct")),
+        rsi14=safe_float(data.get("rsi14")),
+        trend_score=data.get("trend_score") if isinstance(data.get("trend_score"), int) else None,
+        headlines=data.get("headlines", []),
+        levels=data.get("levels") if isinstance(data.get("levels"), dict) else {},
+    )
+
+    rec = {
+        "updated_at": data.get("updated_at") or iso_now(),
+        "version": data.get("version", APP_VERSION),
+        "symbol": data.get("symbol"),
+        "price_usd": data.get("price_usd"),
+        "change_pct": data.get("change_pct"),
+        "signal": data.get("signal"),
+        "signal_reason": data.get("signal_reason", ""),
+        "rsi14": data.get("rsi14"),
+        "trend_score": data.get("trend_score"),
+        "levels": data.get("levels", {}),
+        "macro_summary": data.get("macro_summary", ""),
+        "analysis": data.get("analysis", ""),
+        "forecast": data.get("forecast", ""),
+        "forecast_en": data.get("forecast_en", ""),
+        "xauusd": data.get("xauusd", ""),
+        "premium_insight": data.get("premium_insight", ""),
+        "premium_report": rep or "",
+        "headlines": data.get("headlines", []),
+    }
+
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return True
+
+
+def read_history(limit: int = 500) -> List[Dict[str, Any]]:
+    p = _ensure_history_dir()
+    if not p.exists():
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    with p.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except Exception:
+                continue
+
+    return rows[-limit:]
+
+
+def ensure_snapshot_persisted_from_public() -> None:
+    try:
+        if read_history(limit=1):
+            return
+        snap = read_public_snapshot()
+        if snap:
+            store_snapshot_if_needed(snap)
+    except Exception:
+        pass
+
+
+def get_history_rows_resilient(limit: int = 500) -> List[Dict[str, Any]]:
+    rows = read_history(limit=limit)
+    if rows:
+        return rows
+
+    snap = read_public_snapshot()
+    if snap:
+        return [snap]
+
+    if CACHE.data:
+        return [CACHE.data]
+
+    return []
+
+
+def add_forward_returns(rows: List[Dict[str, Any]], days_list=(7, 30)) -> List[Dict[str, Any]]:
+    parsed: List[Tuple[Optional[datetime], Dict[str, Any]]] = [(parse_iso_or_rss(r.get("updated_at", "")), r) for r in rows]
+
+    for t, r in parsed:
+        p0 = safe_float(r.get("price_usd"))
+        if t is None or p0 is None or p0 == 0:
+            for d in days_list:
+                r[f"return_{d}d_pct"] = None
+            continue
+
+        for d in days_list:
+            target = t + timedelta(days=d)
+            p1 = None
+            for tt, rr in parsed:
+                if tt and tt >= target:
+                    p1 = safe_float(rr.get("price_usd"))
+                    break
+            r[f"return_{d}d_pct"] = None if not p1 else ((p1 - p0) / p0) * 100.0
+
+    return rows
+
+
+def signal_stats_last30(rows_newest_first: List[Dict[str, Any]]) -> Dict[str, Any]:
+    sig_rows = []
+    for r in rows_newest_first:
+        s = (r.get("signal") or "").lower()
+        if s in ("bullish", "bearish"):
+            sig_rows.append(r)
+        if len(sig_rows) >= 30:
+            break
+
+    bullish: List[float] = []
+    bearish: List[float] = []
+    hits = 0
+    evals = 0
+
+    for r in sig_rows:
+        r7 = safe_float(r.get("return_7d_pct"))
+        if r7 is None:
+            continue
+
+        s = (r.get("signal") or "").lower()
+        evals += 1
+
+        if s == "bullish":
+            bullish.append(r7)
+            if r7 > 0:
+                hits += 1
+        elif s == "bearish":
+            bearish.append(r7)
+            if r7 < 0:
+                hits += 1
+
+    def avg(xs: List[float]) -> Optional[float]:
+        if not xs:
+            return None
+        return sum(xs) / len(xs)
+
+    return {
+        "signals_considered": len(sig_rows),
+        "evaluated_with_7d": evals,
+        "bullish_avg_7d": avg(bullish),
+        "bearish_avg_7d": avg(bearish),
+        "hit_rate_7d": (hits / evals * 100.0) if evals else None,
+    }
+
+
+def get_archive_dates(last_n_days: int = 45) -> List[str]:
+    rows = get_history_rows_resilient(limit=2000)
+    today_utc = datetime.now(timezone.utc).date()
+    cutoff = today_utc - timedelta(days=max(0, last_n_days - 1))
+
+    seen = set()
+    dates: List[str] = []
+
+    for r in rows:
+        d = date_yyyy_mm_dd_from_iso_or_rss(str(r.get("updated_at") or ""))
+        if not d:
+            continue
+        try:
+            dd = date.fromisoformat(d)
+        except Exception:
+            continue
+        if dd < cutoff:
+            continue
+        if d not in seen:
+            seen.add(d)
+            dates.append(d)
+
+    dates.sort(reverse=True)
+    return dates
+
+
+def load_snapshot_for_date(day: str) -> Optional[Dict[str, Any]]:
+    rows = get_history_rows_resilient(limit=4000)
+    best: Optional[Dict[str, Any]] = None
+
+    for r in rows:
+        d = date_yyyy_mm_dd_from_iso_or_rss(str(r.get("updated_at") or ""))
+        if d == day:
+            best = r
+
+    if best:
+        return best
+
+    snap = read_public_snapshot()
+    if snap:
+        d = date_yyyy_mm_dd_from_iso_or_rss(str(snap.get("updated_at") or ""))
+        if d == day:
+            return snap
+
+    return None
+
+
+# =============================================================================
+# Startup
+# =============================================================================
+
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
@@ -783,7 +1072,12 @@ def _startup() -> None:
     if snap:
         CACHE.data = snap
         CACHE.ts = time.time()
+    ensure_snapshot_persisted_from_public()
 
+
+# =============================================================================
+# Users / premium state
+# =============================================================================
 
 def ensure_user(email: str) -> None:
     email_n = normalize_email(email)
@@ -1136,7 +1430,7 @@ class YahooPrice:
 
 
 def fetch_yahoo_chart(symbol: str, range_: str, interval: str) -> Dict[str, Any]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/4.3)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/4.4)"}
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_}&interval={interval}"
     return http_get_json(url, headers=headers)
 
@@ -1271,8 +1565,7 @@ def compute_technical_levels(symbol: str) -> Dict[str, Any]:
         "low_20d": low_20,
         "high_60d": high_60,
         "low_60d": low_60,
-    }
-
+    }    
 
 # =============================================================================
 # RSS headlines + relevance filter
@@ -1318,7 +1611,7 @@ def fetch_headlines(limit: int = FULL_HEADLINES_LIMIT) -> List[Dict[str, str]]:
     if not RSS_FEEDS:
         return []
 
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/4.3)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Gullbrief/4.4)"}
     all_items: List[Dict[str, str]] = []
 
     for feed_url in RSS_FEEDS:
@@ -1423,10 +1716,9 @@ def summarize_bundle_with_openai(
         f"- SMA50: {fmt_level(levels.get('sma50'))}\n\n"
         "Overskrifter:\n- " + "\n- ".join(titles) + "\n\n"
         "Skriv:\n"
-        "- analysis: 5–7 linjer på norsk.\n"
-        "- forecast: 6–10 linjer på norsk med base/bull/bear.\n"
-        "- forecast_en: 5–8 linjer på engelsk.\n"
-        "- xauusd: 5–7 linjer på norsk.\n"
+        "- analysis: 10–14 linjer på norsk, tydelig mer utfyllende enn en kort oppsummering.\n"
+        "- forecast: 10–14 linjer på norsk med base/bull/bear og litt mer forklaring på drivere og nivåer.\n"
+        "- forecast_en: 8–12 lines in English, clearly more detailed than a brief note.\n"
         "- premium: 26–40 linjer på norsk med tydelig struktur.\n"
     )
 
@@ -1719,237 +2011,11 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
         "headlines_total": len(data.get("headlines") or []),
         "headlines_free_limit": FREE_HEADLINES_LIMIT,
     }
-    
+
+
 def get_public_today_payload(mode: str = "analysis") -> Dict[str, Any]:
     data = get_public_brief(force_build=False)
     return map_to_public_today(data, mode)
-
-# =============================================================================
-# History
-# =============================================================================
-
-def _ensure_history_dir() -> pathlib.Path:
-    p = pathlib.Path(HISTORY_PATH)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-def _read_last_snapshot() -> Optional[Dict[str, Any]]:
-    p = _ensure_history_dir()
-    if not p.exists():
-        return None
-    try:
-        with p.open("rb") as f:
-            f.seek(0, 2)
-            size = f.tell()
-            if size == 0:
-                return None
-            f.seek(max(0, size - 16384), 0)
-            tail = f.read().decode("utf-8", errors="replace").splitlines()
-            for line in reversed(tail):
-                line = line.strip()
-                if line:
-                    return json.loads(line)
-    except Exception:
-        return None
-    return None
-
-
-def _should_store_snapshot(new_data: Dict[str, Any], last: Optional[Dict[str, Any]]) -> bool:
-    if last is None:
-        return True
-
-    new_signal = (new_data.get("signal") or "").lower()
-    last_signal = (last.get("signal") or "").lower()
-    if new_signal and new_signal != last_signal:
-        return True
-
-    new_dt = parse_iso_or_rss(new_data.get("updated_at", "")) or datetime.now(timezone.utc)
-    last_dt = parse_iso_or_rss(last.get("updated_at", "")) or datetime.now(timezone.utc)
-    return new_dt.date() != last_dt.date()
-
-
-def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
-    p = _ensure_history_dir()
-    last = _read_last_snapshot()
-    if not _should_store_snapshot(data, last):
-        return False
-
-    rep = premium_report_ai_from_bundle(
-        bundle={
-            "premium": (data.get("premium_insight") or ""),
-            "analysis": (data.get("analysis") or data.get("macro_summary") or ""),
-            "forecast": (data.get("forecast") or ""),
-            "xauusd": (data.get("xauusd") or ""),
-        },
-        signal_state=str(data.get("signal") or "neutral"),
-        signal_reason=str(data.get("signal_reason") or ""),
-        price_usd=safe_float(data.get("price_usd")),
-        change_pct=safe_float(data.get("change_pct")),
-        rsi14=safe_float(data.get("rsi14")),
-        trend_score=data.get("trend_score") if isinstance(data.get("trend_score"), int) else None,
-        headlines=data.get("headlines", []),
-        levels=data.get("levels") if isinstance(data.get("levels"), dict) else {},
-    )
-
-    rec = {
-        "updated_at": data.get("updated_at") or iso_now(),
-        "version": data.get("version", APP_VERSION),
-        "symbol": data.get("symbol"),
-        "price_usd": data.get("price_usd"),
-        "change_pct": data.get("change_pct"),
-        "signal": data.get("signal"),
-        "signal_reason": data.get("signal_reason", ""),
-        "rsi14": data.get("rsi14"),
-        "trend_score": data.get("trend_score"),
-        "levels": data.get("levels", {}),
-        "macro_summary": data.get("macro_summary", ""),
-        "analysis": data.get("analysis", ""),
-        "forecast": data.get("forecast", ""),
-        "forecast_en": data.get("forecast_en", ""),
-        "xauusd": data.get("xauusd", ""),
-        "premium_insight": data.get("premium_insight", ""),
-        "premium_report": rep or "",
-        "headlines": data.get("headlines", []),
-    }
-
-    with p.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    return True
-
-
-def read_history(limit: int = 500) -> List[Dict[str, Any]]:
-    p = _ensure_history_dir()
-    if not p.exists():
-        return []
-
-    rows: List[Dict[str, Any]] = []
-    with p.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rows.append(json.loads(line))
-            except Exception:
-                continue
-
-    return rows[-limit:]
-
-
-def add_forward_returns(rows: List[Dict[str, Any]], days_list=(7, 30)) -> List[Dict[str, Any]]:
-    parsed: List[Tuple[Optional[datetime], Dict[str, Any]]] = [(parse_iso_or_rss(r.get("updated_at", "")), r) for r in rows]
-
-    for t, r in parsed:
-        p0 = safe_float(r.get("price_usd"))
-        if t is None or p0 is None or p0 == 0:
-            for d in days_list:
-                r[f"return_{d}d_pct"] = None
-            continue
-
-        for d in days_list:
-            target = t + timedelta(days=d)
-            p1 = None
-            for tt, rr in parsed:
-                if tt and tt >= target:
-                    p1 = safe_float(rr.get("price_usd"))
-                    break
-            r[f"return_{d}d_pct"] = None if not p1 else ((p1 - p0) / p0) * 100.0
-
-    return rows
-
-
-def signal_stats_last30(rows_newest_first: List[Dict[str, Any]]) -> Dict[str, Any]:
-    sig_rows = []
-    for r in rows_newest_first:
-        s = (r.get("signal") or "").lower()
-        if s in ("bullish", "bearish"):
-            sig_rows.append(r)
-        if len(sig_rows) >= 30:
-            break
-
-    bullish: List[float] = []
-    bearish: List[float] = []
-    hits = 0
-    evals = 0
-
-    for r in sig_rows:
-        r7 = safe_float(r.get("return_7d_pct"))
-        if r7 is None:
-            continue
-
-        s = (r.get("signal") or "").lower()
-        evals += 1
-
-        if s == "bullish":
-            bullish.append(r7)
-            if r7 > 0:
-                hits += 1
-        elif s == "bearish":
-            bearish.append(r7)
-            if r7 < 0:
-                hits += 1
-
-    def avg(xs: List[float]) -> Optional[float]:
-        if not xs:
-            return None
-        return sum(xs) / len(xs)
-
-    return {
-        "signals_considered": len(sig_rows),
-        "evaluated_with_7d": evals,
-        "bullish_avg_7d": avg(bullish),
-        "bearish_avg_7d": avg(bearish),
-        "hit_rate_7d": (hits / evals * 100.0) if evals else None,
-    }
-
-
-def get_archive_dates(last_n_days: int = 45) -> List[str]:
-    rows = read_history(limit=2000)
-    today_utc = datetime.now(timezone.utc).date()
-    cutoff = today_utc - timedelta(days=max(0, last_n_days - 1))
-
-    seen = set()
-    dates: List[str] = []
-
-    for r in rows:
-        d = date_yyyy_mm_dd_from_iso_or_rss(str(r.get("updated_at") or ""))
-        if not d:
-            continue
-        try:
-            dd = date.fromisoformat(d)
-        except Exception:
-            continue
-        if dd < cutoff:
-            continue
-        if d not in seen:
-            seen.add(d)
-            dates.append(d)
-
-    dates.sort(reverse=True)
-    return dates
-
-
-def load_snapshot_for_date(day: str) -> Optional[Dict[str, Any]]:
-    p = _ensure_history_dir()
-    if not p.exists():
-        return None
-
-    best: Optional[Dict[str, Any]] = None
-    with p.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                r = json.loads(line)
-            except Exception:
-                continue
-            d = date_yyyy_mm_dd_from_iso_or_rss(str(r.get("updated_at") or ""))
-            if d == day:
-                best = r
-
-    return best
 
 
 # =============================================================================
@@ -2100,8 +2166,10 @@ def nav_tabs(active: str) -> str:
         ("/gullpris-prognose", "forecast", "🔮 Prognose"),
         ("/xauusd", "xauusd", "💵 XAUUSD"),
         ("/gullpris-signal", "signal", "🚦 Signal"),
+        ("/trade-gull", "trade_gull", "🪙 Trade gull"),
         ("/nyheter", "nyheter", "🇳🇴 Nyheter"),
         ("/gold-price-forecast", "gold_forecast", "🌍 Forecast"),
+        ("/trade-gold", "trade_gold", "🧭 Trade gold"),
         ("/news", "news", "📰 News"),
         ("/premium", "premium", "⭐ Premium"),
     ]
@@ -2220,7 +2288,6 @@ def jsonld_news_article(base: str, article: Dict[str, Any]) -> str:
         },
     }
     return '<script type="application/ld+json">' + json.dumps(data, ensure_ascii=False) + "</script>"
-
 
 COMMON_STYLE = """
 <style>
@@ -2444,6 +2511,70 @@ COMMON_STYLE = """
   .newslist h3{margin-top:0}
   .article-body p{margin:0 0 16px}
   .article-body h2{margin:26px 0 10px;font-size:22px;font-family:ui-serif,Georgia,Times}
+  .content-block{margin-top:16px}
+  .content-block h2{
+    margin:0 0 10px;
+    font-size:24px;
+    font-family:ui-serif,Georgia,Times;
+  }
+  .content-block h3{
+    margin:18px 0 8px;
+    font-size:18px;
+  }
+  .content-block p{margin:0 0 14px;color:var(--text)}
+  .content-block ul li{margin:8px 0}
+  .affiliate-box{
+    margin-top:16px;
+    padding:18px;
+    border-radius:16px;
+    border:1px solid rgba(212,175,55,.16);
+    background:
+      radial-gradient(600px 220px at 0% 0%, rgba(212,175,55,.08), rgba(212,175,55,0) 60%),
+      linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.02));
+  }
+  .affiliate-box h3{
+    margin:0 0 8px;
+    font-size:20px;
+    color:#f2e2a6;
+  }
+  .affiliate-box p{
+    margin:0;
+    color:#d8d0b2;
+  }
+  .affiliate-actions{
+    margin-top:12px;
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+  }
+  .affiliate-btn{
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    padding:10px 14px;
+    border-radius:999px;
+    font-weight:850;
+    background:var(--gold);
+    color:#10141b;
+  }
+  .affiliate-disclaimer{
+    margin-top:10px;
+    font-size:12px;
+    color:var(--muted);
+  }
+  .inline-guide-link{
+    margin-top:14px;
+    padding-top:14px;
+    border-top:1px solid rgba(255,255,255,.06);
+    color:var(--muted);
+  }
+  .inline-guide-link a{
+    color:#f2e2a6;
+    font-weight:700;
+  }
+  .archive-map{
+    margin-bottom:16px;
+  }
 </style>
 """
 
@@ -2511,7 +2642,9 @@ def footer_links(is_en: bool = False) -> str:
             <a href="/gullpris">Norwegian gold price</a>
             <a href="/gullpris-analyse">Norwegian analysis</a>
             <a href="/gullpris-signal">Norwegian signal</a>
+            <a href="/trade-gull">Trade gull</a>
             <a href="/gold-price-forecast">Gold price forecast</a>
+            <a href="/trade-gold">Trade gold</a>
             <a href="/xauusd">XAUUSD</a>
             <a href="/news">News</a>
             <a href="/nyheter">Nyheter</a>
@@ -2532,7 +2665,9 @@ def footer_links(is_en: bool = False) -> str:
         <a href="/gullpris">Gullpris i dag</a>
         <a href="/gullpris-analyse">Gullpris analyse</a>
         <a href="/gullpris-signal">Gullpris signal</a>
+        <a href="/trade-gull">Trade gull</a>
         <a href="/gold-price-forecast">Gold price forecast</a>
+        <a href="/trade-gold">Trade gold</a>
         <a href="/xauusd">XAUUSD</a>
         <a href="/news">News</a>
         <a href="/nyheter">Nyheter</a>
@@ -2565,7 +2700,7 @@ def premium_feature_box(resistance=None, support=None) -> str:
         <div class="premiummini"><b>Arkiv + e-postvarsler</b><br/>Følg signalendringer og få den daglige rapporten sendt direkte.</div>
       </div>
       <div class="premiumcta">
-        <a class="goldbtn" href="premium">Åpne Premium</a>
+        <a class="goldbtn" href="/premium">Åpne Premium</a>
         <a class="ghostbtn" href="/archive">Se arkiv</a>
       </div>
     </div>
@@ -2587,6 +2722,44 @@ def premium_feature_box_en() -> str:
         <a class="goldbtn" href="/premium">Open Premium</a>
         <a class="ghostbtn" href="/archive">Open archive</a>
       </div>
+    </div>
+    """
+
+
+def affiliate_box(lang: str = "no") -> str:
+    is_en = lang == "en"
+    title = "Want to trade gold yourself?" if is_en else "Vil du trade gull selv?"
+    body = (
+        "Gold can be traded directly in the market through XAUUSD using a trading platform."
+        if is_en
+        else "Gull kan handles direkte i markedet via XAUUSD gjennom en tradingplattform."
+    )
+    button = "Trade gold on eToro →" if is_en else "Handle gull hos eToro →"
+    href = ETORO_AFFILIATE_EN if is_en else ETORO_AFFILIATE_NO
+    disclaimer = AFFILIATE_DISCLAIMER_EN if is_en else AFFILIATE_DISCLAIMER_NO
+
+    return f"""
+    <div class="affiliate-box">
+      <h3>{_escape_html(title)}</h3>
+      <p>{_escape_html(body)}</p>
+      <div class="affiliate-actions">
+        <a class="affiliate-btn" href="{_escape_html(href)}" target="_blank" rel="nofollow sponsored">{_escape_html(button)}</a>
+      </div>
+      <div class="affiliate-disclaimer">{_escape_html(disclaimer)}</div>
+    </div>
+    """
+
+
+def internal_trade_guide_link(lang: str = "no") -> str:
+    if lang == "en":
+        return """
+        <div class="inline-guide-link">
+          Want to learn how to trade gold? <a href="/trade-gold">Read our gold trading guide</a>.
+        </div>
+        """
+    return """
+    <div class="inline-guide-link">
+      Vil du lære mer om hvordan man trader gull? <a href="/trade-gull">Se vår guide til gullhandel</a>.
     </div>
     """
 
@@ -2684,62 +2857,6 @@ def normalize_article_for_display(article: Dict[str, Any]) -> Dict[str, Any]:
     return a
 
 
-def get_recent_news_articles(lang: str, limit: int = 3, exclude_slug: Optional[str] = None) -> List[Dict[str, Any]]:
-    items = []
-    for article in get_news_articles():
-        if str(article.get("lang") or "") != lang:
-            continue
-        if exclude_slug and str(article.get("slug") or "") == exclude_slug:
-            continue
-        items.append(normalize_article_for_display(article))
-    return items[:limit]
-
-
-def render_recent_articles_box(lang: str, exclude_slug: Optional[str] = None) -> str:
-    articles = get_recent_news_articles(lang=lang, limit=3, exclude_slug=exclude_slug)
-    if not articles:
-        return ""
-
-    title = "Latest articles" if lang == "en" else "Siste artikler"
-    count_label = "items" if lang == "en" else "artikler"
-
-    items = []
-    for article in articles:
-        path = str(article.get("path") or "#")
-        title_txt = str(article.get("title") or "")
-        summary = str(article.get("summary") or "")
-        published = format_article_date(str(article.get("published_at") or article.get("date") or ""), lang=lang)
-        items.append(
-            "<li>"
-            f'<a href="{_escape_html(path)}"><b>{_escape_html(title_txt)}</b></a><br/>'
-            f'<span class="muted">{_escape_html(summary)}</span><br/>'
-            f'<span class="small">{_escape_html(published)}</span>'
-            "</li>"
-        )
-
-    return f"""
-    <section class="card" style="margin-top:16px">
-      <div class="title"><h2>{title}</h2><div class="muted">{len(articles)} {count_label}</div></div>
-      <ul>{''.join(items)}</ul>
-    </section>
-    """
-def ensure_news_seeded() -> None:
-    articles = get_news_articles()
-    if articles:
-        return
-    try:
-        if NEWS_DAILY_ENABLED:
-            generate_and_store_daily_news()
-    except Exception:
-        pass
-
-def get_latest_articles(limit: int = 3, lang: str = "no") -> List[Dict[str, Any]]:
-    articles = get_recent_news_articles(lang=lang, limit=limit)
-    out = []
-    for article in articles:
-        out.append({"date": str(article.get("date") or ""), "title": str(article.get("title") or ""), "url": str(article.get("path") or "#")})
-    return out
-
 def auth_login_box(next_url: str = "/archive", sent: bool = False, email: str = "", is_en: bool = False) -> str:
     sent_html = ""
     if sent:
@@ -2757,7 +2874,7 @@ def auth_login_box(next_url: str = "/archive", sent: bool = False, email: str = 
         else "Har du kjøpt Premium? Få innloggingslenke på e-post, uten passord."
     )
     placeholder = "Your email" if is_en else "Din e-post"
-    button = "Send magic link"
+    button = "Send magic link" if is_en else "Send magic link"
 
     return f"""
     <div class="authbox">
@@ -2821,7 +2938,6 @@ def key_fallback_box(is_en: bool = False) -> str:
 </script>
 """
 
-
 INDEX_BODY_TEMPLATE = """
 <div class="wrap">
   <header>
@@ -2837,9 +2953,9 @@ INDEX_BODY_TEMPLATE = """
   </header>
 
   <section class="hero">
-<h1>Gullpris i dag 📈 analyse, prognose og signal for gull (XAUUSD)</h1>
-<p>__DESC__</p>
-</section>
+    <h1>Gullpris i dag 📈 analyse, prognose og signal for gull (XAUUSD)</h1>
+    <p>__DESC__</p>
+  </section>
 
   __NAV_TABS__
 
@@ -2854,6 +2970,7 @@ INDEX_BODY_TEMPLATE = """
       <h2 style="margin-top:14px">Analyse</h2>
       <p class="muted" id="macro"></p>
 
+      __GUIDE_LINK__
       __PREMIUM_BOX__
       __AUTH_BOX__
       __KEY_BOX__
@@ -2872,13 +2989,10 @@ INDEX_BODY_TEMPLATE = """
       <ul id="headlines"></ul>
       <div id="premiumNewsHint" class="premiumhint" style="display:none"></div>
     </div>
-</section>
+  </section>
 
-<section class="card" style="margin-top:16px">
   __LATEST_NEWS__
-</section>
-
-__FOOTER__
+  __FOOTER__
 </div>
 
 <script id="initialTodayData" type="application/json">__INITIAL_JSON__</script>
@@ -2967,10 +3081,10 @@ __FOOTER__
   $("btnReload").addEventListener("click", loadToday);
 
   if(!renderInitial()){
-  loadToday();
-} else {
-  setTimeout(loadToday, 500);
-}
+    loadToday();
+  } else {
+    setTimeout(loadToday, 500);
+  }
 </script>
 """
 
@@ -3032,10 +3146,7 @@ PREMIUM_BODY_TEMPLATE = """
       </ul>
     </div>
   </section>
-  <section class="card" style="margin-top:16px">
-    <h2>Siste artikler</h2>
-    __LATEST_NEWS__
-  </section>
+  __LATEST_NEWS__
   __FOOTER__
 </div>
 
@@ -3061,6 +3172,8 @@ PREMIUM_BODY_TEMPLATE = """
   $("btnPay").addEventListener("click", startCheckout);
 </script>
 """
+
+
 SEO_LANDING_TEMPLATE = """
 <div class="wrap">
   <header>
@@ -3091,6 +3204,8 @@ SEO_LANDING_TEMPLATE = """
       <p class="muted" style="margin-top:12px" id="reason">–</p>
       <p class="muted" id="macro"></p>
 
+      __GUIDE_LINK__
+      __AFFILIATE_BOX__
       __PREMIUM_BOX__
       __AUTH_BOX__
       __KEY_BOX__
@@ -3206,6 +3321,120 @@ SEO_LANDING_TEMPLATE = """
 </script>
 """
 
+
+TRADE_GUIDE_TEMPLATE = """
+<div class="wrap">
+  <header>
+    <div class="brand"><a href="/">__APP_NAME__</a></div>
+    <div class="nav">
+      <a href="/">Analyse</a>
+      <a href="/gullpris">Gullpris</a>
+      <a href="/archive">Arkiv</a>
+      <a href="/news">News</a>
+      <a href="/nyheter">Nyheter</a>
+      <a class="cta" href="/premium">Premium</a>
+    </div>
+  </header>
+
+  <section class="hero">
+    <h1>__H1__</h1>
+    <p>__INTRO__</p>
+  </section>
+
+  __NAV_TABS__
+
+  <section class="grid">
+    <div class="card">
+      <div class="title"><h2>__CARD_TITLE__</h2><div class="muted" id="updatedAt">__UPDATED_LOADING__</div></div>
+      <div class="big" id="price">$–</div>
+      <div class="sub" id="change">__CHANGE_LOADING__</div>
+      <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
+      <p class="muted" style="margin-top:12px" id="reason">–</p>
+      <p class="muted" id="macro"></p>
+
+      __AFFILIATE_BOX__
+
+      <div class="btnrow">
+        <button id="btnReload">Oppdater</button>
+        <button onclick="location.href='__ANALYSIS_LINK__'">__ANALYSIS_BTN__</button>
+        <button onclick="location.href='/premium'">Premium</button>
+      </div>
+      <div class="muted" id="status" style="margin-top:8px">Status: …</div>
+    </div>
+
+    <div class="card content-block">
+      __CONTENT_HTML__
+    </div>
+  </section>
+
+  __LATEST_NEWS__
+  __FOOTER__
+</div>
+
+<script id="initialTodayData" type="application/json">__INITIAL_JSON__</script>
+<script>
+  const MODE = "__MODE__";
+  const $ = (id) => document.getElementById(id);
+  const fmtPct = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ((Number(x)>0?"+":"") + Number(x).toFixed(2) + "%");
+  const fmtPrice = (x) => (x==null||Number.isNaN(Number(x))) ? "–" : ("$" + Number(x).toLocaleString(undefined,{maximumFractionDigits:2}));
+  const pillClass = (s) => (s||"").toLowerCase().includes("bull") ? "bullish" : ((s||"").toLowerCase().includes("bear") ? "bearish" : "neutral");
+  const UPDATED_LABEL = "__UPDATED_LABEL__";
+  const CHANGE_LABEL = "__CHANGE_LABEL__";
+  const formatUpdatedAt = (value) => {
+    if(!value) return "–";
+    try{
+      const d = new Date(value);
+      if(Number.isNaN(d.getTime())) return value;
+      return d.toLocaleDateString("__DATE_LOCALE__", { day:"numeric", month:"long", year:"numeric" });
+    }catch(e){
+      return value;
+    }
+  };
+
+  function renderToday(data){
+    $("updatedAt").textContent = UPDATED_LABEL + formatUpdatedAt(data.updated_at);
+    $("price").textContent = fmtPrice(data?.gold?.price_usd);
+    $("change").textContent = CHANGE_LABEL + fmtPct(data?.gold?.change_pct);
+    const state = data?.signal?.state || "neutral";
+    $("signalText").textContent = "Signal: " + state;
+    $("signalPill").className = "pill " + pillClass(state);
+    $("reason").textContent = data?.signal?.reason_short || "";
+    $("macro").textContent = data?.macro?.summary_short || "";
+  }
+
+  function renderInitial(){
+    try{
+      const raw = $("initialTodayData")?.textContent || "{}";
+      const data = JSON.parse(raw);
+      if(data && data.gold){
+        renderToday(data);
+        $("status").textContent = "Status: Snapshot lastet";
+        return true;
+      }
+    }catch(e){}
+    return false;
+  }
+
+  async function loadToday(){
+    try{
+      $("status").textContent = "Status: Laster snapshot…";
+      const res = await fetch("/api/public/today?mode=" + encodeURIComponent(MODE), {cache:"no-store"});
+      const data = await res.json();
+      if(!res.ok) throw new Error(data?.message || ("HTTP " + res.status));
+      renderToday(data);
+      $("status").textContent = "Status: OK";
+    }catch(e){
+      $("status").textContent = "Status: Feil: " + e;
+    }
+  }
+
+  $("btnReload").addEventListener("click", loadToday);
+
+  if(!renderInitial()){
+    loadToday();
+  }
+</script>
+"""
 
 ARCHIVE_BODY_INNER = """
 <div class="wrap">
@@ -3501,6 +3730,136 @@ LEGAL_PAGE_TEMPLATE = """
 """
 
 
+def get_recent_news_articles(lang: str, limit: int = 3, exclude_slug: Optional[str] = None) -> List[Dict[str, Any]]:
+    items = []
+    for article in get_news_articles_by_lang(lang):
+        if exclude_slug and str(article.get("slug") or "") == exclude_slug:
+            continue
+        items.append(normalize_article_for_display(article))
+    return items[:limit]
+
+
+def get_latest_articles(limit: int = 3, lang: str = "no") -> List[Dict[str, Any]]:
+    articles = get_recent_news_articles(lang=lang, limit=limit)
+    out = []
+    for article in articles:
+        out.append({"date": str(article.get("date") or ""), "title": str(article.get("title") or ""), "url": str(article.get("path") or "#")})
+    return out
+
+
+def render_recent_articles_box(lang: str, exclude_slug: Optional[str] = None) -> str:
+    articles = get_recent_news_articles(lang=lang, limit=3, exclude_slug=exclude_slug)
+    if not articles:
+        return ""
+
+    title = "Latest articles" if lang == "en" else "Siste artikler"
+    count_label = "items" if lang == "en" else "artikler"
+
+    items = []
+    for article in articles:
+        path = str(article.get("path") or "#")
+        title_txt = str(article.get("title") or "")
+        summary = str(article.get("summary") or "")
+        published = format_article_date(str(article.get("published_at") or article.get("date") or ""), lang=lang)
+        items.append(
+            "<li>"
+            f'<a href="{_escape_html(path)}"><b>{_escape_html(title_txt)}</b></a><br/>'
+            f'<span class="muted">{_escape_html(summary)}</span><br/>'
+            f'<span class="small">{_escape_html(published)}</span>'
+            "</li>"
+        )
+
+    return f"""
+    <section class="card" style="margin-top:16px">
+      <div class="title"><h2>{title}</h2><div class="muted">{len(articles)} {count_label}</div></div>
+      <ul>{''.join(items)}</ul>
+    </section>
+    """
+
+
+def ensure_news_seeded() -> None:
+    articles = get_all_news_articles()
+    if articles:
+        return
+    try:
+        if NEWS_DAILY_ENABLED:
+            generate_and_store_daily_news()
+    except Exception:
+        pass
+
+
+def trade_guide_content_html(lang: str = "no") -> str:
+    if lang == "en":
+        return """
+        <h2>What is XAUUSD?</h2>
+        <p>XAUUSD is the common market symbol for gold priced in US dollars. When people trade spot gold through many brokers and CFD platforms, they often do it through an instrument linked to XAUUSD.</p>
+
+        <h2>How can you trade gold?</h2>
+        <p>Gold can be traded in several ways, including spot exposure, CFDs, futures, mining shares, gold ETFs and physical bullion. The most accessible route for many retail users is often a platform that offers gold exposure through XAUUSD.</p>
+
+        <h3>Typical process</h3>
+        <ul>
+          <li>Open an account with a trading platform</li>
+          <li>Search for gold or XAUUSD</li>
+          <li>Choose position size and risk level</li>
+          <li>Follow price, trend and macro drivers such as USD, yields and inflation</li>
+        </ul>
+
+        <h2>Trading vs investing in gold</h2>
+        <p>Trading is usually more short term and focused on price movements over hours, days or weeks. Investing is often longer term and may involve holding gold-related exposure for diversification, inflation hedging or macro protection.</p>
+
+        <h2>Is eToro one option?</h2>
+        <p>Yes. eToro is one possible platform for gaining gold exposure, and it is relevant here because many readers looking at gold forecasts also want a straightforward way to follow or trade XAUUSD. There are also other platforms in the market.</p>
+
+        <h2>What should you watch before trading?</h2>
+        <ul>
+          <li>US dollar strength</li>
+          <li>Treasury yields and real yields</li>
+          <li>Inflation releases</li>
+          <li>Central bank communication</li>
+          <li>Geopolitical stress and safe-haven demand</li>
+          <li>Technical levels such as support, resistance and moving averages</li>
+        </ul>
+
+        <h2>Related reading on Gullbrief</h2>
+        <p>Before trading gold, it helps to read the daily <a href="/gold-price-forecast">gold price forecast</a>, the Norwegian <a href="/gullpris-analyse">gullpris analyse</a> and the <a href="/xauusd">XAUUSD page</a> to understand the live market picture.</p>
+        """
+    return """
+    <h2>Hva er XAUUSD?</h2>
+    <p>XAUUSD er det vanlige markedssymbolet for gull priset i amerikanske dollar. Når mange trader gull via meglere og tradingplattformer, skjer det ofte gjennom et instrument knyttet til XAUUSD.</p>
+
+    <h2>Hvordan kan man trade gull?</h2>
+    <p>Gull kan handles på flere måter, blant annet via spot-eksponering, CFD-er, futures, gruveaksjer, gull-ETF-er og fysisk gull. For mange private brukere er en plattform med tilgang til XAUUSD ofte den enkleste inngangen.</p>
+
+    <h3>Typisk prosess</h3>
+    <ul>
+      <li>Opprett konto hos en tradingplattform</li>
+      <li>Søk opp gull eller XAUUSD</li>
+      <li>Velg posisjonsstørrelse og risikonivå</li>
+      <li>Følg pris, trend og makrodrivere som USD, renter og inflasjon</li>
+    </ul>
+
+    <h2>Forskjellen på trading og investering</h2>
+    <p>Trading er ofte mer kortsiktig og handler om prisbevegelser over timer, dager eller uker. Investering er gjerne mer langsiktig og kan handle om diversifisering, inflasjonssikring eller generell eksponering mot gull over tid.</p>
+
+    <h2>Er eToro en mulig plattform?</h2>
+    <p>Ja. eToro er en mulig plattform for å få eksponering mot gull, og er relevant her fordi mange som leser gullprognoser også ønsker en enkel vei til å følge eller trade XAUUSD. Det finnes også andre plattformer i markedet.</p>
+
+    <h2>Hva bør du følge med på før du trader gull?</h2>
+    <ul>
+      <li>Utviklingen i amerikansk dollar</li>
+      <li>Renter og realrenter</li>
+      <li>Inflasjonstall</li>
+      <li>Sentralbankkommunikasjon</li>
+      <li>Geopolitisk uro og safe haven-etterspørsel</li>
+      <li>Tekniske nivåer som støtte, motstand og glidende snitt</li>
+    </ul>
+
+    <h2>Relatert lesning på Gullbrief</h2>
+    <p>Før du trader gull kan det være nyttig å lese daglig <a href="/gullpris-analyse">gullpris analyse</a>, <a href="/gullpris-prognose">gullpris prognose</a> og <a href="/xauusd">XAUUSD-siden</a> for å forstå markedsbildet akkurat nå.</p>
+    """
+
+
 def seo_landing(
     request: Request,
     path: str,
@@ -3514,9 +3873,9 @@ def seo_landing(
     seo_text_html: str = "",
     sent_magic_link: bool = False,
     sent_email: str = "",
+    include_affiliate: bool = False,
+    include_trade_link: bool = False,
 ) -> HTMLResponse:
-
-    # sørg for at artikler finnes
     ensure_news_seeded()
 
     initial_payload = get_public_today_payload(mode)
@@ -3539,8 +3898,9 @@ def seo_landing(
     )
 
     key_box_html = key_fallback_box(is_en=is_en)
-
     latest_news_html = render_recent_articles_box(articles_lang)
+    affiliate_html = affiliate_box(lang=lang) if include_affiliate else ""
+    guide_link_html = internal_trade_guide_link(lang=lang) if include_trade_link else ""
 
     body = _replace_many(
         SEO_LANDING_TEMPLATE,
@@ -3548,7 +3908,7 @@ def seo_landing(
             "__APP_NAME__": _escape_html(APP_NAME),
             "__H1__": _escape_html(h1),
             "__INTRO__": _escape_html(intro),
-            "__FOOTER__": footer_links(),
+            "__FOOTER__": footer_links(is_en=is_en),
             "__MODE__": _escape_html(mode),
             "__NAV_TABS__": nav_tabs(nav_active),
             "__INITIAL_JSON__": json_for_html(initial_payload),
@@ -3557,24 +3917,79 @@ def seo_landing(
             "__KEY_BOX__": key_box_html,
             "__SEO_TEXT__": seo_text_html,
             "__LATEST_NEWS__": latest_news_html,
-
+            "__AFFILIATE_BOX__": affiliate_html,
+            "__GUIDE_LINK__": guide_link_html,
             "__CARD_TITLE__": "Gold price today" if is_en else "Gullpris i dag",
             "__UPDATED_LOADING__": "Updating…" if is_en else "Oppdaterer…",
             "__CHANGE_LOADING__": "Change:" if is_en else "Endring:",
             "__UPDATED_LABEL__": "Updated:" if is_en else "Oppdatert:",
             "__CHANGE_LABEL__": "Change:" if is_en else "Endring:",
             "__DATE_LOCALE__": "en-US" if is_en else "nb-NO",
-
             "__HEADLINES_TITLE__": "Relevant headlines" if is_en else "Relevante nyheter",
             "__HEADLINES_SUB__": "Direct sources" if is_en else "Direkte kilder",
-
             "__PREMIUM_NEWS_HINT__": (
                 "Showing __FREE_LIMIT__ recent articles. Premium gives access to more market headlines, the longer report and the archive. "
                 "<a href=&quot;/premium&quot;>Open Premium</a>"
                 if is_en
                 else
-                "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=&quot;premium&quot;>Åpne Premium</a>"
+                "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=&quot;/premium&quot;>Åpne Premium</a>"
             ),
+        },
+    )
+
+    return HTMLResponse(
+        html_shell(
+            request,
+            title=title,
+            description=desc,
+            path=path,
+            body_html=body,
+            lang=lang,
+        )
+    )
+
+
+def trade_guide_page(
+    request: Request,
+    *,
+    path: str,
+    title: str,
+    desc: str,
+    h1: str,
+    intro: str,
+    lang: str,
+    nav_active: str,
+) -> HTMLResponse:
+    ensure_news_seeded()
+    mode = "forecast_en" if lang == "en" else "analysis"
+    initial_payload = get_public_today_payload(mode)
+
+    if lang == "en" and isinstance(initial_payload.get("signal"), dict):
+        initial_payload["signal"]["reason_short"] = translate_signal_reason_to_english(
+            str(initial_payload["signal"].get("reason_short") or "")
+        )
+
+    body = _replace_many(
+        TRADE_GUIDE_TEMPLATE,
+        {
+            "__APP_NAME__": _escape_html(APP_NAME),
+            "__H1__": _escape_html(h1),
+            "__INTRO__": _escape_html(intro),
+            "__NAV_TABS__": nav_tabs(nav_active),
+            "__CARD_TITLE__": "Gold price snapshot" if lang == "en" else "Markedssnapshot",
+            "__UPDATED_LOADING__": "Updating…" if lang == "en" else "Oppdaterer…",
+            "__CHANGE_LOADING__": "Change:" if lang == "en" else "Endring:",
+            "__UPDATED_LABEL__": "Updated:" if lang == "en" else "Oppdatert:",
+            "__CHANGE_LABEL__": "Change:" if lang == "en" else "Endring:",
+            "__DATE_LOCALE__": "en-US" if lang == "en" else "nb-NO",
+            "__MODE__": mode,
+            "__INITIAL_JSON__": json_for_html(initial_payload),
+            "__AFFILIATE_BOX__": affiliate_box(lang=lang),
+            "__CONTENT_HTML__": trade_guide_content_html(lang=lang),
+            "__ANALYSIS_LINK__": "/gold-price-forecast" if lang == "en" else "/gullpris-analyse",
+            "__ANALYSIS_BTN__": "Read forecast" if lang == "en" else "Les analyse",
+            "__LATEST_NEWS__": render_recent_articles_box("en" if lang == "en" else "no"),
+            "__FOOTER__": footer_links(is_en=(lang == "en")),
         },
     )
 
@@ -3604,10 +4019,26 @@ def legal_page(request: Request, path: str, title: str, intro: str, content_html
     )
     return HTMLResponse(html_shell(request, title=title, description=intro, path=path, body_html=body))
 
-
 # =============================================================================
 # News engine
 # =============================================================================
+
+def dedupe_articles(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    out: List[Dict[str, Any]] = []
+    for article in sorted(articles, key=lambda x: str(x.get("published_at") or ""), reverse=True):
+        key = (
+            str(article.get("id") or ""),
+            str(article.get("lang") or ""),
+            str(article.get("slug") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(article)
+    out.sort(key=lambda x: str(x.get("published_at") or ""), reverse=True)
+    return out
+
 
 def get_news_articles() -> List[Dict[str, Any]]:
     store = read_news_store()
@@ -3616,12 +4047,22 @@ def get_news_articles() -> List[Dict[str, Any]]:
     for article in articles:
         if isinstance(article, dict):
             out.append(article)
+    out = dedupe_articles(out)
     out.sort(key=lambda x: str(x.get("published_at") or ""), reverse=True)
     return out
 
 
+def get_all_news_articles() -> List[Dict[str, Any]]:
+    current = get_news_articles()
+    archived = load_news_archive()
+    merged = dedupe_articles(current + archived)
+    merged.sort(key=lambda x: str(x.get("published_at") or ""), reverse=True)
+    return merged
+
+
 def save_news_articles(articles: List[Dict[str, Any]]) -> None:
-    write_news_store({"articles": articles})
+    write_news_store({"articles": dedupe_articles(articles)})
+
 
 def append_news_archive(articles: List[Dict[str, Any]]) -> None:
     path = pathlib.Path(NEWS_ARCHIVE_PATH)
@@ -3644,28 +4085,19 @@ def append_news_archive(articles: List[Dict[str, Any]]) -> None:
             if article_id and article_id not in existing_ids:
                 f.write(json.dumps(article, ensure_ascii=False) + "\n")
 
-def dedupe_articles(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    seen = set()
-    out: List[Dict[str, Any]] = []
-    for article in sorted(articles, key=lambda x: str(x.get("published_at") or ""), reverse=True):
-        key = (str(article.get("lang") or ""), str(article.get("slug") or ""))
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(article)
-    out.sort(key=lambda x: str(x.get("published_at") or ""), reverse=True)
-    return out
-
 
 def get_news_article_by_slug(lang: str, slug: str) -> Optional[Dict[str, Any]]:
-    for article in get_news_articles():
-        if str(article.get("lang") or "") == lang and str(article.get("slug") or "") == slug:
-            return article
+    articles = get_news_articles_by_lang(lang)
+    for article in articles:
+        if str(article.get("slug") or "") == slug:
+            return normalize_article_for_display(article)
     return None
 
 
 def get_news_articles_by_lang(lang: str) -> List[Dict[str, Any]]:
-    return [a for a in get_news_articles() if str(a.get("lang") or "") == lang]
+    articles = [a for a in get_all_news_articles() if str(a.get("lang") or "") == lang]
+    articles.sort(key=lambda x: str(x.get("published_at") or ""), reverse=True)
+    return articles
 
 
 def filter_articles_by_year(articles: List[Dict[str, Any]], year: str) -> List[Dict[str, Any]]:
@@ -3848,7 +4280,6 @@ def generate_article_content(
 
     try:
         from openai import OpenAI  # type: ignore
-
         client = OpenAI(api_key=OPENAI_API_KEY)
         resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
         text = (resp.output_text or "").strip()
@@ -3912,22 +4343,54 @@ def build_daily_news_articles(force_date: Optional[str] = None) -> List[Dict[str
 
 def generate_and_store_daily_news(force_date: Optional[str] = None) -> Dict[str, Any]:
     day = force_date or utc_now().date().isoformat()
-    existing = get_news_articles()
+    existing = get_all_news_articles()
 
     existing_same_day = [a for a in existing if str(a.get("date") or "") == day and str(a.get("lang") or "") in ("en", "no")]
     if len(existing_same_day) >= 4:
         return {"ok": True, "generated": 0, "articles": existing_same_day, "message": "ALREADY_GENERATED"}
 
     new_articles = build_daily_news_articles(force_date=day)
-    merged = dedupe_articles(existing + new_articles)
+    current_store_articles = get_news_articles()
+    merged = dedupe_articles(current_store_articles + new_articles)
     save_news_articles(merged)
     append_news_archive(new_articles)
 
     return {"ok": True, "generated": len(new_articles), "articles": new_articles, "message": "GENERATED"}
 
 
+def generate_news_range(days: int = 7, end_date: Optional[str] = None) -> Dict[str, Any]:
+    days = max(1, min(days, 30))
+    if end_date:
+        try:
+            end = date.fromisoformat(end_date)
+        except Exception:
+            raise RuntimeError("INVALID_END_DATE")
+    else:
+        end = utc_now().date()
+
+    generated_total = 0
+    created_articles: List[Dict[str, Any]] = []
+
+    for offset in range(days):
+        day = (end - timedelta(days=offset)).isoformat()
+        try:
+            result = generate_and_store_daily_news(force_date=day)
+            generated_total += int(result.get("generated") or 0)
+            created_articles.extend(result.get("articles") or [])
+        except Exception:
+            continue
+
+    return {
+        "ok": True,
+        "days": days,
+        "end_date": end.isoformat(),
+        "generated": generated_total,
+        "articles": created_articles,
+    }
+
+
 def render_news_index_page(request: Request, lang: str) -> HTMLResponse:
-    articles = [normalize_article_for_display(a) for a in load_news_archive() if str(a.get("lang") or "") == lang]
+    articles = [normalize_article_for_display(a) for a in get_news_articles_by_lang(lang)]
 
     title = "Gold News and Market Updates" if lang == "en" else "Gullnyheter og markedsoppdateringer"
     desc = (
@@ -3955,11 +4418,6 @@ def render_news_index_page(request: Request, lang: str) -> HTMLResponse:
         )
 
     recent_box = render_recent_articles_box(lang=lang)
-    years = unique_news_years(lang)
-    archive_links = "".join(
-        f'<li><a href="/{"news" if lang == "en" else "nyheter"}/{y}">{_escape_html(y)}</a></li>'
-        for y in years
-    )
     is_en = lang == "en"
 
     body = f"""
@@ -3998,6 +4456,7 @@ def render_news_index_page(request: Request, lang: str) -> HTMLResponse:
     """
 
     return HTMLResponse(html_shell(request, title=title, description=desc, path="/news" if lang == "en" else "/nyheter", body_html=body, lang=lang))
+
 
 def render_news_archive_list(
     *,
@@ -4051,6 +4510,7 @@ def render_news_archive_list(
             lang=lang,
         )
     )
+
 
 def _article_content_to_html(text: str) -> str:
     lines = [line.rstrip() for line in (text or "").splitlines()]
@@ -4126,11 +4586,11 @@ def render_news_article_page(request: Request, article: Dict[str, Any]) -> HTMLR
       </section>
 
       <section class="grid" style="grid-template-columns:1fr">
-  <div class="card">
-    <div class="title"><h2>{'Archive' if lang == 'en' else 'Arkiv'}</h2><div class="muted">{'News article' if lang == 'en' else 'Nyhetsartikkel'}</div></div>
-    <ul><li><a href="/{'news' if lang == 'en' else 'nyheter'}">{'Back to news' if lang == 'en' else 'Tilbake til nyheter'}</a></li></ul>
-  </div>
-</section>
+        <div class="card">
+          <div class="title"><h2>{'Archive' if lang == 'en' else 'Arkiv'}</h2><div class="muted">{'News article' if lang == 'en' else 'Nyhetsartikkel'}</div></div>
+          <ul><li><a href="/{'news' if lang == 'en' else 'nyheter'}">{'Back to news' if lang == 'en' else 'Tilbake til nyheter'}</a></li></ul>
+        </div>
+      </section>
 
       {auth_login_box(next_url=path, is_en=is_en)}
       {key_fallback_box(is_en=is_en)}
@@ -4171,21 +4631,7 @@ def index(request: Request) -> HTMLResponse:
     sent = request.query_params.get("sent") == "1"
     sent_email = str(request.query_params.get("email") or "")
 
-    articles = get_latest_articles(3, lang="no")
-
-    items = ""
-    for a in articles:
-        items += f'<li><a href="{a["url"]}">{_escape_html(a["title"])}</a></li>'
-
-    latest_news_html = f"""
-<div class="newslist">
-  <h3>Siste artikler</h3>
-  <ul>
-    {items}
-  </ul>
-  <a href="/nyheter">Se alle nyheter</a>
-</div>
-"""
+    latest_news_html = render_recent_articles_box("no")
 
     body = _replace_many(
         INDEX_BODY_TEMPLATE,
@@ -4199,6 +4645,7 @@ def index(request: Request) -> HTMLResponse:
             "__PREMIUM_BOX__": premium_feature_box(),
             "__AUTH_BOX__": auth_login_box(next_url="/", sent=sent, email=sent_email),
             "__KEY_BOX__": key_fallback_box(),
+            "__GUIDE_LINK__": internal_trade_guide_link("no"),
             "__CARD_TITLE__": "Gullpris i dag",
             "__UPDATED_LOADING__": "Oppdaterer…",
             "__CHANGE_LOADING__": "Endring: ⏳",
@@ -4207,7 +4654,7 @@ def index(request: Request) -> HTMLResponse:
             "__DATE_LOCALE__": "nb-NO",
             "__HEADLINES_TITLE__": "Relevante nyheter",
             "__HEADLINES_SUB__": "Direkte kilder",
-            "__PREMIUM_NEWS_HINT__": "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=&quot;premium&quot;>Åpne Premium</a>",
+            "__PREMIUM_NEWS_HINT__": "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=&quot;/premium&quot;>Åpne Premium</a>",
         },
     )
 
@@ -4223,24 +4670,12 @@ def premium_page(request: Request, session_token: Optional[str] = Cookie(default
     sent = request.query_params.get("sent") == "1"
     sent_email = str(request.query_params.get("email") or "")
 
-    articles = get_latest_articles(3, lang="no")
-    items = ""
-    for a in articles:
-        items += f'<li><a href="{a["url"]}">{_escape_html(a["title"])}</a></li>'
-
-    latest_news_html = f"""
-<div class="newslist">
-  <ul>
-    {items}
-  </ul>
-  <a href="/nyheter">Se alle nyheter</a>
-</div>
-"""
+    latest_news_html = render_recent_articles_box("no")
 
     extra_top = ""
     if auth["authenticated"] and auth["premium_active"]:
         latest = None
-        history_rows = read_history(limit=1)
+        history_rows = get_history_rows_resilient(limit=1)
         if history_rows:
             latest = history_rows[-1]
         if not latest:
@@ -4293,15 +4728,8 @@ def archive_page(request: Request) -> HTMLResponse:
     title = "Gullbrief arkiv – signalhistorikk og avkastning etter signal"
     desc = "Se siste snapshots gratis. Premium gir full historikk, signalhistorikk og 7d/30d etter signal."
 
+    ensure_snapshot_persisted_from_public()
     dates = get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)
-    if not dates:
-        snap = read_public_snapshot()
-        if snap:
-            try:
-                store_snapshot_if_needed(snap)
-            except Exception:
-                pass
-        dates = get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)
 
     links = []
     for d in dates[:60]:
@@ -4311,7 +4739,7 @@ def archive_page(request: Request) -> HTMLResponse:
     sent_email = str(request.query_params.get("email") or "")
 
     archive_map_html = (
-        "<div class='wrap'><div class='card' style='margin-top:12px'>"
+        "<div class='wrap archive-map'><div class='card' style='margin-top:12px'>"
         "<div style='font-size:18px;font-weight:900'>Arkivkart</div>"
         "<div class='muted'>Lenker til de siste dagene.</div>"
         f"<ul>{''.join(links) if links else '<li class=\"muted\">Ingen arkiv-dager ennå.</li>'}</ul>"
@@ -4492,6 +4920,7 @@ def page_gullpris_prognose(request: Request) -> HTMLResponse:
         intro="Fremoverskuende scenario for de neste 24–72 timene. Gold price forecast og XAUUSD outlook.",
         mode="forecast",
         nav_active="forecast",
+        include_trade_link=True,
     )
 
 
@@ -4507,6 +4936,8 @@ def page_gold_price_forecast(request: Request) -> HTMLResponse:
         mode="forecast_en",
         nav_active="gold_forecast",
         lang="en",
+        include_affiliate=True,
+        include_trade_link=True,
     )
 
 
@@ -4521,6 +4952,8 @@ def page_gullpris_analyse(request: Request) -> HTMLResponse:
         intro="Nøktern daglig analyse av gull. Fokus på trend, signal og makro. Gold price analysis og XAUUSD signal.",
         mode="analysis",
         nav_active="analysis",
+        include_affiliate=True,
+        include_trade_link=True,
     )
 
 
@@ -4585,7 +5018,46 @@ def page_gullpris(request: Request) -> HTMLResponse:
         mode="analysis",
         nav_active="analysis",
         seo_text_html=seo_text_html,
+        include_trade_link=True,
     )
+
+
+@app.get("/trade-gull", response_class=HTMLResponse)
+def page_trade_gull(request: Request) -> HTMLResponse:
+    return trade_guide_page(
+        request,
+        path="/trade-gull",
+        title="Hvordan trade gull | XAUUSD, trading og investering",
+        desc="Guide til hvordan man kan trade gull, hva XAUUSD er, forskjellen på trading og investering, og hvordan en plattform som eToro kan brukes.",
+        h1="Hvordan trade gull",
+        intro="En enkel guide til gullhandel, XAUUSD og hva du bør vite før du trader gull.",
+        lang="no",
+        nav_active="trade_gull",
+    )
+
+
+@app.get("/hvordan-trade-gull", response_class=HTMLResponse)
+def page_hvordan_trade_gull():
+    return RedirectResponse(url="/trade-gull", status_code=301)
+
+
+@app.get("/trade-gold", response_class=HTMLResponse)
+def page_trade_gold(request: Request) -> HTMLResponse:
+    return trade_guide_page(
+        request,
+        path="/trade-gold",
+        title="How to Trade Gold | XAUUSD, trading vs investing and platforms",
+        desc="Guide to how to trade gold, what XAUUSD is, the difference between trading and investing, and how a platform like eToro can be used.",
+        h1="How to Trade Gold",
+        intro="A practical guide to gold trading, XAUUSD and what to watch before trading gold.",
+        lang="en",
+        nav_active="trade_gold",
+    )
+
+
+@app.get("/how-to-trade-gold", response_class=HTMLResponse)
+def page_how_to_trade_gold():
+    return RedirectResponse(url="/trade-gold", status_code=301)
 
 
 @app.head("/gullpris")
@@ -4719,7 +5191,6 @@ def news_day_page(request: Request, year: str, month: str, day: str) -> HTMLResp
         items_html="".join(items),
         path=f"/news/{year}/{month}/{day}",
     )
-
 
 @app.get("/nyheter/{year}", response_class=HTMLResponse)
 def nyheter_year_page(request: Request, year: str) -> HTMLResponse:
@@ -4955,11 +5426,10 @@ def api_public_today(mode: str = "analysis"):
 
 @app.get("/api/public/teaser-history")
 def api_public_teaser_history():
-    rows = read_history(limit=50)
+    rows = get_history_rows_resilient(limit=50)
     rows = add_forward_returns(rows)
     items = rows[-3:] if rows else []
-    return JSONResponse({"items": items, "count": len(items)})
-
+    return JSONResponse({"items": items, "count": len(items)})           
 
 # =============================================================================
 # Private / premium API
@@ -4994,7 +5464,7 @@ def api_history(
         return JSONResponse({"message": "UNAUTHORIZED"}, status_code=401)
 
     limit = max(1, min(limit, 1000))
-    rows = read_history(limit=limit)
+    rows = get_history_rows_resilient(limit=limit)
     rows = add_forward_returns(rows)
     rows_out = list(reversed(rows))
     stats = signal_stats_last30(rows_out)
@@ -5048,7 +5518,7 @@ def api_send_premium_daily(
     base = get_base_url(request)
 
     latest = None
-    rows = read_history(limit=1)
+    rows = get_history_rows_resilient(limit=1)
     if rows:
         latest = rows[-1]
     if not latest:
@@ -5128,9 +5598,6 @@ def api_send_premium_daily(
 
 # =============================================================================
 # Social API
-
-# =============================================================================
-# Social API
 # =============================================================================
 
 @app.get("/api/social/daily-post-text")
@@ -5177,6 +5644,21 @@ def api_generate_news(x_api_key: Optional[str] = Header(default=None), force_dat
         return JSONResponse({"ok": False, "message": "NEWS_DAILY_DISABLED"}, status_code=400)
     try:
         result = generate_and_store_daily_news(force_date=force_date)
+        return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
+
+
+@app.get("/api/tasks/regenerate-news")
+def api_regenerate_news(
+    x_api_key: Optional[str] = Header(default=None),
+    days: int = 7,
+    end_date: Optional[str] = None,
+):
+    if x_api_key != ADMIN_API_KEY:
+        return JSONResponse({"message": "UNAUTHORIZED"}, status_code=401)
+    try:
+        result = generate_news_range(days=days, end_date=end_date)
         return JSONResponse(result)
     except Exception as e:
         return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
@@ -5315,6 +5797,8 @@ async def api_stripe_webhook(request: Request):
 def health():
     snapshot = read_public_snapshot()
     news_store = read_news_store()
+    archive_count = len(load_news_archive())
+    history_exists = bool(get_history_rows_resilient(limit=1))
     return JSONResponse(
         {
             "status": "ok",
@@ -5324,11 +5808,14 @@ def health():
             "openai_enabled": bool(OPENAI_API_KEY),
             "rss_feeds": RSS_FEEDS,
             "history_path": HISTORY_PATH,
+            "history_available": history_exists,
             "db_path": DB_PATH,
             "public_snapshot_path": PUBLIC_SNAPSHOT_PATH,
             "public_snapshot_exists": bool(snapshot),
             "news_path": NEWS_PATH,
             "news_count": len(news_store.get("articles") or []),
+            "news_archive_path": NEWS_ARCHIVE_PATH,
+            "news_archive_count": archive_count,
             "admin_key_configured": bool(ADMIN_API_KEY),
             "stripe_enabled": stripe_ready(),
             "stripe_secret_len": len(stripe_env()["secret_key"]),
@@ -5339,6 +5826,8 @@ def health():
             "social_configured": x_configured(),
             "news_daily_enabled": NEWS_DAILY_ENABLED,
             "session_cookie_name": SESSION_COOKIE_NAME,
+            "etoro_no_configured": bool(ETORO_AFFILIATE_NO),
+            "etoro_en_configured": bool(ETORO_AFFILIATE_EN),
             "version": APP_VERSION,
         }
     )
@@ -5354,7 +5843,7 @@ def robots_txt(request: Request):
 @app.get("/feed.xml")
 def feed_xml(request: Request):
     base = get_base_url(request)
-    rows = list(reversed(read_history(limit=max(FEED_ITEMS, 5))))
+    rows = list(reversed(get_history_rows_resilient(limit=max(FEED_ITEMS, 5))))
     if not rows:
         try:
             snap = read_public_snapshot()
@@ -5401,6 +5890,8 @@ def sitemap_xml(request: Request):
         "/gullpris-signal",
         "/gold-price-forecast",
         "/xauusd",
+        "/trade-gull",
+        "/trade-gold",
         "/news",
         "/nyheter",
         "/premium",
@@ -5412,7 +5903,7 @@ def sitemap_xml(request: Request):
     ]
 
     archive_urls = [f"/archive/{d}" for d in get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)]
-    news_urls = [str(a.get("path") or "") for a in get_news_articles() if str(a.get("path") or "")]
+    news_urls = [str(a.get("path") or "") for a in get_all_news_articles() if str(a.get("path") or "")]
     archive_news_urls = []
 
     for lang_prefix, lang_code in [("/news", "en"), ("/nyheter", "no")]:
@@ -5450,10 +5941,11 @@ def sitemap_xml(request: Request):
     parts.append("</urlset>")
     return Response("".join(parts), media_type="application/xml")
 
+
 @app.get("/news-sitemap.xml")
 def news_sitemap(request: Request):
     base = get_base_url(request)
-    articles = [a for a in get_news_articles() if str(a.get("published_at") or "")]
+    articles = [a for a in get_all_news_articles() if str(a.get("published_at") or "")]
 
     parts = ['<?xml version="1.0" encoding="UTF-8"?>']
     parts.append('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">')
@@ -5493,6 +5985,4 @@ def google_site_verification():
 
 if __name__ == "__main__":
     import uvicorn
-
-    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=False)
-
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=False)     
