@@ -5856,12 +5856,23 @@ def rebuild_history_from_yahoo(days: int = 7) -> Dict[str, Any]:
 def should_generate_market_driver(snapshot: Dict[str, Any], headlines: List[Dict[str, str]]) -> bool:
     change_pct = safe_float(snapshot.get("change_pct"))
     signal = str(snapshot.get("signal") or "neutral").lower()
+
     if change_pct is not None and abs(change_pct) >= 1.2:
         return True
+
     blob = " ".join(_headline_titles(headlines, 8)).lower()
     trigger_words = ["fed", "inflation", "cpi", "pce", "yields", "treasury", "war", "geopolitical", "central bank"]
     hits = sum(1 for word in trigger_words if word in blob)
-    return hits >= 2 or signal in {"bullish", "bearish"}
+
+    move_ok = change_pct is not None and abs(change_pct) >= 0.8
+
+    return (
+        hits >= 2
+        or (
+            signal in ("bullish", "bearish")
+            and (move_ok or hits >= 1)
+        )
+    )
 
 
 @app.get("/api/public/chart")
