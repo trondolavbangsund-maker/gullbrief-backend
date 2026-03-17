@@ -41,7 +41,7 @@ from fastapi.staticfiles import StaticFiles
 # =============================================================================
 
 APP_NAME = os.getenv("APP_NAME", "Gullbrief").strip()
-APP_VERSION = "4.4"
+APP_VERSION = "4.5"
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip()
@@ -1988,26 +1988,58 @@ def get_public_brief(force_build: bool = False) -> Dict[str, Any]:
 
 def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[str, Any]:
     mode = (mode or "analysis").strip().lower()
-    if mode not in ("analysis", "forecast", "forecast_en", "xauusd", "signal"):
+    if mode not in ("analysis", "analysis_en", "forecast", "forecast_en", "xauusd", "xauusd_en", "signal", "signal_en"):
         mode = "analysis"
+
+    price_usd = safe_float(data.get("price_usd"))
+    change_pct = safe_float(data.get("change_pct"))
+    signal_state = str(data.get("signal") or "neutral").upper()
+    signal_reason_no = str(data.get("signal_reason") or "")
+    signal_reason_en = translate_signal_reason_to_english(signal_reason_no)
+    forecast_en = str(data.get("forecast_en") or "").strip()
+    xauusd_text = str(data.get("xauusd") or "").strip()
+    analysis_text = str(data.get("analysis") or data.get("macro_summary") or "").strip()
+    levels = data.get("levels") if isinstance(data.get("levels"), dict) else {}
+    support_near = safe_float(levels.get("support_near"))
+    resistance_near = safe_float(levels.get("resistance_near"))
 
     if mode == "forecast":
         summary = data.get("forecast") or data.get("macro_summary") or ""
     elif mode == "forecast_en":
-        summary = data.get("forecast_en") or data.get("forecast") or data.get("macro_summary") or ""
+        summary = forecast_en or data.get("forecast") or data.get("macro_summary") or ""
+    elif mode == "analysis_en":
+        price_txt = f"${price_usd:,.2f}" if price_usd is not None else "current levels"
+        change_txt = f"{change_pct:+.2f}%" if change_pct is not None else "an unclear daily move"
+        support_txt = f"${support_near:,.0f}" if support_near is not None else "near support"
+        resistance_txt = f"${resistance_near:,.0f}" if resistance_near is not None else "near resistance"
+        summary = (
+            f"Gold is trading around {price_txt} with a daily move of {change_txt}. "
+            f"The current signal is {signal_state}, with the technical read pointing to {signal_reason_en.lower() if signal_reason_en else 'a mixed near-term setup'}. "
+            f"The market is watching support around {support_txt} and resistance near {resistance_txt}."
+        )
     elif mode == "xauusd":
-        summary = data.get("analysis") or data.get("macro_summary") or ""
-    elif mode == "signal":
-        signal_state = str(data.get("signal") or "neutral").upper()
-
+        summary = xauusd_text or analysis_text
+    elif mode == "xauusd_en":
+         summary = forecast_en or analysis_en or "Gold remains highly sensitive to the US dollar, Treasury yields and broader risk sentiment."
+    elif mode == "signal_en":
         if signal_state == "BULLISH":
-            summary = "Dagens signal er BULLISH. Gullprisen ligger i en positiv teknisk struktur der prisbildet støttes av trend og glidende snitt."
+            base = "Today's signal is BULLISH. Gold remains in a constructive short-term technical structure."
         elif signal_state == "BEARISH":
-            summary = "Dagens signal er BEARISH. Gullprisen viser et svakere teknisk bilde med press på trend og glidende snitt."
+            base = "Today's signal is BEARISH. Gold shows a weaker short-term technical structure."
         else:
-            summary = "Dagens signal er NEUTRAL. Markedet viser et blandet bilde uten et tydelig bullish eller bearish overtak akkurat nå."
+            base = "Today's signal is NEUTRAL. Gold is trading in a mixed short-term setup without a clear directional edge."
+        detail = forecast_en or xauusd_text
+        summary = (base + (" " + detail if detail else "")).strip()
+    elif mode == "signal":
+        if signal_state == "BULLISH":
+            base = "Dagens signal er BULLISH. Gullprisen ligger i en positiv teknisk struktur der prisbildet støttes av trend og glidende snitt."
+        elif signal_state == "BEARISH":
+            base = "Dagens signal er BEARISH. Gullprisen viser et svakere teknisk bilde med press på trend og glidende snitt."
+        else:
+            base = "Dagens signal er NEUTRAL. Markedet viser et blandet bilde uten et tydelig bullish eller bearish overtak akkurat nå."
+        summary = (base + (" " + analysis_text if analysis_text else "")).strip()
     else:
-        summary = data.get("analysis") or data.get("macro_summary") or ""
+        summary = analysis_text
 
     return {
         "updated_at": data.get("updated_at") or iso_now(),
@@ -2177,19 +2209,101 @@ def build_news_social_post(article: Dict[str, Any], request: Optional[Request] =
 # Navigation / UI helpers
 # =============================================================================
 
+def is_english_active(active: str) -> bool:
+    return active in {"gold_price", "gold_analysis", "gold_forecast", "gold_signal", "news", "trade_gold", "premium_en", "archive_en", "xauusd_en"}
+
+
+def language_switch(active: str) -> str:
+    current_is_en = is_english_active(active)
+    mapping = {
+        "analysis": "/gold-price-analysis",
+        "forecast": "/gold-price-forecast",
+        "gullpris": "/gold-price",
+        "xauusd": "/xauusd-en",
+        "signal": "/gold-signal",
+        "nyheter": "/news",
+        "trade_gull": "/trade-gold",
+        "premium": "/premium-en",
+        "archive": "/archive-en",
+        "gold_price": "/gullpris",
+        "gold_analysis": "/gullpris-analyse",
+        "gold_forecast": "/gullpris-prognose",
+        "gold_signal": "/gullpris-signal",
+        "news": "/nyheter",
+        "trade_gold": "/handle-gull",
+        "premium_en": "/premium",
+        "archive_en": "/archive",
+        "xauusd_en": "/xauusd",
+    }
+    no_href = mapping.get(active, "/") if current_is_en else "/"
+    en_href = mapping.get(active, "/gold-price") if not current_is_en else "/gold-price"
+    no_cls = "lang-switch active" if not current_is_en else "lang-switch"
+    en_cls = "lang-switch active" if current_is_en else "lang-switch"
+    return (
+        '<div class="lang-switches">'
+        f'<a class="{no_cls}" href="{no_href}">NO</a>'
+        '<span class="lang-sep">|</span>'
+        f'<a class="{en_cls}" href="{en_href}">EN</a>'
+        '</div>'
+    )
+
+
+def site_header(active: str) -> str:
+    current_is_en = is_english_active(active)
+    home_href = "/gold-price" if current_is_en else "/"
+    if current_is_en:
+        nav = [
+            ("/gold-price", "Gold price"),
+            ("/gold-price-analysis", "Analysis"),
+            ("/gold-price-forecast", "Forecast"),
+            ("/xauusd-en", "XAUUSD"),
+            ("/gold-signal", "Signal"),
+            ("/news", "News"),
+            ("/trade-gold", "Trade gold"),
+            ("/archive-en", "Archive"),
+            ("/premium-en", "Premium"),
+        ]
+    else:
+        nav = [
+            ("/gullpris", "Gullpris"),
+            ("/gullpris-analyse", "Analyse"),
+            ("/gullpris-prognose", "Prognose"),
+            ("/xauusd", "XAUUSD"),
+            ("/gullpris-signal", "Signal"),
+            ("/nyheter", "Nyheter"),
+            ("/handle-gull", "Handle gull"),
+            ("/archive", "Arkiv"),
+            ("/premium", "Premium"),
+        ]
+    links = "".join(f'<a href="{href}">{_escape_html(label)}</a>' for href, label in nav)
+    return f'<header><div class="brand"><a href="{home_href}">{_escape_html(APP_NAME)}</a></div><div class="nav">{links}</div>{language_switch(active)}</header>'
+
+
 def nav_tabs(active: str) -> str:
-    tabs = [
-        ("/gullpris-analyse", "analysis", "📈 Analyse"),
-        ("/gullpris-prognose", "forecast", "🔮 Prognose"),
-        ("/xauusd", "xauusd", "💵 XAUUSD"),
-        ("/gullpris-signal", "signal", "🚦 Signal"),
-        ("/trade-gull", "trade_gull", "🪙 Trade gull"),
-        ("/nyheter", "nyheter", "🇳🇴 Nyheter"),
-        ("/gold-price-forecast", "gold_forecast", "🌍 Forecast"),
-        ("/trade-gold", "trade_gold", "🧭 Trade gold"),
-        ("/news", "news", "📰 News"),
-        ("/premium", "premium", "⭐ Premium"),
-    ]
+    if is_english_active(active):
+        tabs = [
+            ("/gold-price", "gold_price", "Gold price"),
+            ("/gold-price-analysis", "gold_analysis", "Analysis"),
+            ("/gold-price-forecast", "gold_forecast", "Forecast"),
+            ("/xauusd-en", "xauusd_en", "XAUUSD"),
+            ("/gold-signal", "gold_signal", "Signal"),
+            ("/news", "news", "News"),
+            ("/trade-gold", "trade_gold", "Trade gold"),
+            ("/archive-en", "archive_en", "Archive"),
+            ("/premium-en", "premium_en", "Premium"),
+        ]
+    else:
+        tabs = [
+            ("/gullpris", "gullpris", "Gullpris"),
+            ("/gullpris-analyse", "analysis", "Analyse"),
+            ("/gullpris-prognose", "forecast", "Prognose"),
+            ("/xauusd", "xauusd", "XAUUSD"),
+            ("/gullpris-signal", "signal", "Signal"),
+            ("/nyheter", "nyheter", "Nyheter"),
+            ("/handle-gull", "trade_gull", "Handle gull"),
+            ("/archive", "archive", "Arkiv"),
+            ("/premium", "premium", "Premium"),
+        ]
     links = []
     for href, key, label in tabs:
         cls = "tab active" if key == active else "tab"
@@ -2592,6 +2706,15 @@ COMMON_STYLE = """
   .archive-map{
     margin-bottom:16px;
   }
+  .lang-switches{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;white-space:nowrap}
+  .lang-switch{color:var(--muted);font-weight:700}
+  .lang-switch.active{color:#fff}
+  .lang-sep{color:var(--muted)}
+  .mini-chart{margin-top:16px;height:84px;border-top:1px solid var(--line);padding-top:14px}
+  .mini-chart svg{width:100%;height:68px;display:block}
+  .mini-chart .chart-line{fill:none;stroke:var(--gold);stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+  .mini-chart .chart-fill{fill:rgba(212,175,55,.10)}
+  .mini-chart .chart-caption{margin-top:6px;font-size:12px;color:var(--muted)}
 </style>
 """
 
@@ -2655,18 +2778,15 @@ def footer_links(is_en: bool = False) -> str:
         return """
         <footer>
           <div class="links">
-            <a href="/gullpris-prognose">Norwegian forecast</a>
-            <a href="/gullpris">Norwegian gold price</a>
-            <a href="/gullpris-analyse">Norwegian analysis</a>
-            <a href="/gullpris-signal">Norwegian signal</a>
-            <a href="/trade-gull">Trade gull</a>
-            <a href="/gold-price-forecast">Gold price forecast</a>
-            <a href="/trade-gold">Trade gold</a>
-            <a href="/xauusd">XAUUSD</a>
+            <a href="/gold-price-analysis">Analysis</a>
+            <a href="/gold-price-forecast">Forecast</a>
+            <a href="/gold-price">Gold price</a>
+            <a href="/xauusd-en">XAUUSD</a>
+            <a href="/gold-signal">Signal</a>
             <a href="/news">News</a>
-            <a href="/nyheter">Nyheter</a>
-            <a href="/premium">Premium</a>
-            <a href="/archive">Archive</a>
+            <a href="/trade-gold">Trade gold</a>
+            <a href="/premium-en">Premium</a>
+            <a href="/archive-en">Archive</a>
             <a href="/kontakt">Contact</a>
             <a href="/terms">Terms</a>
             <a href="/privacy">Privacy</a>
@@ -2678,16 +2798,13 @@ def footer_links(is_en: bool = False) -> str:
     return """
     <footer>
       <div class="links">
-        <a href="/gullpris-prognose">Gullpris prognose</a>
-        <a href="/gullpris">Gullpris i dag</a>
-        <a href="/gullpris-analyse">Gullpris analyse</a>
-        <a href="/gullpris-signal">Gullpris signal</a>
-        <a href="/trade-gull">Trade gull</a>
-        <a href="/gold-price-forecast">Gold price forecast</a>
-        <a href="/trade-gold">Trade gold</a>
+        <a href="/gullpris-analyse">Analyse</a>
+        <a href="/gullpris-prognose">Prognose</a>
+        <a href="/gullpris">Gullpris</a>
         <a href="/xauusd">XAUUSD</a>
-        <a href="/news">News</a>
+        <a href="/gullpris-signal">Signal</a>
         <a href="/nyheter">Nyheter</a>
+        <a href="/handle-gull">Handle gull</a>
         <a href="/premium">Premium</a>
         <a href="/archive">Arkiv</a>
         <a href="/kontakt">Kontakt</a>
@@ -2698,6 +2815,13 @@ def footer_links(is_en: bool = False) -> str:
     </footer>
     """
 
+
+chart_html = """
+      <div class="mini-chart">
+        <svg id="priceChart" viewBox="0 0 400 68" preserveAspectRatio="none" aria-label="Price chart"></svg>
+        <div class="chart-caption">7 dager / 7 days</div>
+      </div>
+"""
 
 def premium_feature_box(resistance=None, support=None) -> str:
     return f"""
@@ -2776,7 +2900,7 @@ def internal_trade_guide_link(lang: str = "no") -> str:
         """
     return """
     <div class="inline-guide-link">
-      Vil du lære mer om hvordan man trader gull? <a href="/trade-gull">Se vår guide til gullhandel</a>.
+      Vil du lære mer om hvordan man trader gull? <a href="/handle-gull">Se vår guide til gullhandel</a>.
     </div>
     """
 
@@ -2840,12 +2964,16 @@ def improve_generated_title(lang: str, article_type: str, day: str, summary: str
     if lang == "en":
         if article_type == "analysis":
             return f"Gold price forecast: key levels to watch on {day}"
+        if article_type == "market_driver":
+            return "Gold market driver: what is moving the market now"
         if "usd" in summary_l or "yields" in summary_l:
             return "Gold market update: USD, yields and sentiment in focus"
         return f"Gold market update: macro drivers shaping gold on {day}"
 
     if article_type == "analysis":
         return f"Gullpris analyse: viktige nivåer å følge {day}"
+    if article_type == "market_driver":
+        return "Gull market driver: hva som flytter markedet nå"
     if "inflasjon" in summary_l or "renter" in summary_l:
         return "Gullpris i dag: renter, inflasjon og markedsstemning i fokus"
     return f"Gullmarkedet i dag: oppdatering og nøkkelnivåer {day}"
@@ -2957,17 +3085,7 @@ def key_fallback_box(is_en: bool = False) -> str:
 
 INDEX_BODY_TEMPLATE = """
 <div class="wrap">
-  <header>
-    <div class="brand"><a href="/">__APP_NAME__</a></div>
-    <div class="nav">
-      <a href="/">Analyse</a>
-      <a href="/gullpris">Gullpris</a>
-      <a href="/archive">Arkiv</a>
-      <a href="/news">News</a>
-      <a href="/nyheter">Nyheter</a>
-      <a class="cta" href="/premium">Premium</a>
-    </div>
-  </header>
+  __SITE_HEADER__
 
   <section class="hero">
     <h1>Gullpris i dag 📈 analyse, prognose og signal for gull (XAUUSD)</h1>
@@ -2983,11 +3101,13 @@ INDEX_BODY_TEMPLATE = """
       <div class="sub" id="change">__CHANGE_LOADING__</div>
       <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
       <p class="muted" style="margin-top:12px" id="reason">–</p>
+      __CHART_HTML__
 
       <h2 style="margin-top:14px">Analyse</h2>
       <p class="muted" id="macro"></p>
 
       __GUIDE_LINK__
+      __AFFILIATE_BOX__
       __PREMIUM_BOX__
       __AUTH_BOX__
       __KEY_BOX__
@@ -3033,6 +3153,58 @@ INDEX_BODY_TEMPLATE = """
     }
   };
 
+
+  function renderChart(points){
+    const svg = $("priceChart");
+    if(!svg || !Array.isArray(points) || points.length < 2) return;
+    const vals = points.map(p=>Number(p.close)).filter(v=>Number.isFinite(v));
+    if(vals.length < 2) return;
+    const min = Math.min(...vals), max = Math.max(...vals);
+    const span = Math.max(max-min, 1e-9);
+    const width = 400, height = 68;
+    const coords = vals.map((v,i)=>{
+      const x = (i/(vals.length-1))*width;
+      const y = height - (((v-min)/span)*(height-8)+4);
+      return [x,y];
+    });
+    const line = coords.map((c,i)=>(i?"L":"M") + c[0].toFixed(2)+" "+c[1].toFixed(2)).join(" ");
+    const area = line + ` L ${width} ${height} L 0 ${height} Z`;
+    svg.innerHTML = `<path class="chart-fill" d="${area}"></path><path class="chart-line" d="${line}"></path>`;
+  }
+
+  async function loadChart(){
+    try{
+      const res = await fetch("/api/public/chart?days=7", {cache:"no-store"});
+      const data = await res.json();
+      if(res.ok) renderChart(data.points || []);
+    }catch(e){}
+  }
+
+  function renderChart(points){
+    const svg = $("priceChart");
+    if(!svg || !Array.isArray(points) || points.length < 2) return;
+    const vals = points.map(p=>Number(p.close)).filter(v=>Number.isFinite(v));
+    if(vals.length < 2) return;
+    const min = Math.min(...vals), max = Math.max(...vals);
+    const span = Math.max(max-min, 1e-9);
+    const width = 400, height = 68;
+    const coords = vals.map((v,i)=>{
+      const x = (i/(vals.length-1))*width;
+      const y = height - (((v-min)/span)*(height-8)+4);
+      return [x,y];
+    });
+    const line = coords.map((c,i)=>(i?"L":"M") + c[0].toFixed(2)+" "+c[1].toFixed(2)).join(" ");
+    const area = line + ` L ${width} ${height} L 0 ${height} Z`;
+    svg.innerHTML = `<path class="chart-fill" d="${area}"></path><path class="chart-line" d="${line}"></path>`;
+  }
+
+  async function loadChart(){
+    try{
+      const res = await fetch("/api/public/chart?days=7", {cache:"no-store"});
+      const data = await res.json();
+      if(res.ok) renderChart(data.points || []);
+    }catch(e){}
+  }
   function renderHeadlines(data){
     const ul = $("headlines");
     ul.innerHTML = "";
@@ -3097,6 +3269,7 @@ INDEX_BODY_TEMPLATE = """
 
   $("btnReload").addEventListener("click", loadToday);
 
+  if (typeof loadChart === "function") loadChart();
   if(!renderInitial()){
     loadToday();
   } else {
@@ -3108,17 +3281,7 @@ INDEX_BODY_TEMPLATE = """
 
 PREMIUM_BODY_TEMPLATE = """
 <div class="wrap">
-  <header>
-    <div class="brand"><a href="/">__APP_NAME__</a></div>
-    <div class="nav">
-      <a href="/">Analyse</a>
-      <a href="/gullpris">Gullpris</a>
-      <a href="/archive">Arkiv</a>
-      <a href="/news">News</a>
-      <a href="/nyheter">Nyheter</a>
-      <a class="cta" href="/premium">Premium</a>
-    </div>
-  </header>
+  __SITE_HEADER__
 
   <section class="hero">
     <h1>Premium</h1>
@@ -3131,11 +3294,11 @@ PREMIUM_BODY_TEMPLATE = """
     <div class="card">
       <div class="title"><h2>Dette får du</h2><div class="muted">Premium</div></div>
       <ul>
-        <li><b>Signalhistorikk (siste 30)</b> + treffsikkerhet</li>
-        <li><b>Arkiv</b> med 7d/30d etter signal</li>
-        <li><b>Daglig premium-rapport</b> på norsk, vesentlig lengre enn gratisanalyse</li>
-        <li><b>Flere nyheter</b> enn gratisversjonen</li>
-        <li><b>E-postvarsler</b> ved signalendring og daglig utsendelse</li>
+        <li><b>Signal history (last 30)</b> + hit rate</li>
+        <li><b>Archive</b> with 7d/30d after signal</li>
+        <li><b>Extended daily premium report</b> clearly longer than the free analysis</li>
+        <li><b>More headlines</b> than the free version</li>
+        <li><b>Email alerts</b> for signal changes and daily delivery</li>
       </ul>
 
       <h2 style="margin-top:14px">Kjøp Premium</h2>
@@ -3193,17 +3356,7 @@ PREMIUM_BODY_TEMPLATE = """
 
 SEO_LANDING_TEMPLATE = """
 <div class="wrap">
-  <header>
-    <div class="brand"><a href="/">__APP_NAME__</a></div>
-    <div class="nav">
-      <a href="/">Analyse</a>
-      <a href="/gullpris">Gullpris</a>
-      <a href="/archive">Arkiv</a>
-      <a href="/news">News</a>
-      <a href="/nyheter">Nyheter</a>
-      <a class="cta" href="/premium">Premium</a>
-    </div>
-  </header>
+  __SITE_HEADER__
 
   <section class="hero">
     <h1>__H1__</h1>
@@ -3219,6 +3372,7 @@ SEO_LANDING_TEMPLATE = """
       <div class="sub" id="change">__CHANGE_LOADING__</div>
       <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
       <p class="muted" style="margin-top:12px" id="reason">–</p>
+      __CHART_HTML__
       <p class="muted" id="macro"></p>
 
       __GUIDE_LINK__
@@ -3267,6 +3421,32 @@ SEO_LANDING_TEMPLATE = """
       return value;
     }
   };
+
+  function renderChart(points){
+    const svg = $("priceChart");
+    if(!svg || !Array.isArray(points) || points.length < 2) return;
+    const vals = points.map(p=>Number(p.close)).filter(v=>Number.isFinite(v));
+    if(vals.length < 2) return;
+    const min = Math.min(...vals), max = Math.max(...vals);
+    const span = Math.max(max-min, 1e-9);
+    const width = 400, height = 68;
+    const coords = vals.map((v,i)=>{
+      const x = (i/(vals.length-1))*width;
+      const y = height - (((v-min)/span)*(height-8)+4);
+      return [x,y];
+    });
+    const line = coords.map((c,i)=>(i?"L":"M") + c[0].toFixed(2)+" "+c[1].toFixed(2)).join(" ");
+    const area = line + ` L ${width} ${height} L 0 ${height} Z`;
+    svg.innerHTML = `<path class="chart-fill" d="${area}"></path><path class="chart-line" d="${line}"></path>`;
+  }
+
+  async function loadChart(){
+    try{
+      const res = await fetch("/api/public/chart?days=7", {cache:"no-store"});
+      const data = await res.json();
+      if(res.ok) renderChart(data.points || []);
+    }catch(e){}
+  }
 
   function renderHeadlines(data){
     const ul = $("headlines");
@@ -3332,6 +3512,7 @@ SEO_LANDING_TEMPLATE = """
 
   $("btnReload").addEventListener("click", loadToday);
 
+  if (typeof loadChart === "function") loadChart();
   if(!renderInitial()){
     loadToday();
   }
@@ -3341,17 +3522,7 @@ SEO_LANDING_TEMPLATE = """
 
 TRADE_GUIDE_TEMPLATE = """
 <div class="wrap">
-  <header>
-    <div class="brand"><a href="/">__APP_NAME__</a></div>
-    <div class="nav">
-      <a href="/">Analyse</a>
-      <a href="/gullpris">Gullpris</a>
-      <a href="/archive">Arkiv</a>
-      <a href="/news">News</a>
-      <a href="/nyheter">Nyheter</a>
-      <a class="cta" href="/premium">Premium</a>
-    </div>
-  </header>
+  __SITE_HEADER__
 
   <section class="hero">
     <h1>__H1__</h1>
@@ -3367,6 +3538,7 @@ TRADE_GUIDE_TEMPLATE = """
       <div class="sub" id="change">__CHANGE_LOADING__</div>
       <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
       <p class="muted" style="margin-top:12px" id="reason">–</p>
+      __CHART_HTML__
       <p class="muted" id="macro"></p>
 
       __AFFILIATE_BOX__
@@ -3408,6 +3580,32 @@ TRADE_GUIDE_TEMPLATE = """
     }
   };
 
+  function renderChart(points){
+    const svg = $("priceChart");
+    if(!svg || !Array.isArray(points) || points.length < 2) return;
+    const vals = points.map(p=>Number(p.close)).filter(v=>Number.isFinite(v));
+    if(vals.length < 2) return;
+    const min = Math.min(...vals), max = Math.max(...vals);
+    const span = Math.max(max-min, 1e-9);
+    const width = 400, height = 68;
+    const coords = vals.map((v,i)=>{
+      const x = (i/(vals.length-1))*width;
+      const y = height - (((v-min)/span)*(height-8)+4);
+      return [x,y];
+    });
+    const line = coords.map((c,i)=>(i?"L":"M") + c[0].toFixed(2)+" "+c[1].toFixed(2)).join(" ");
+    const area = line + ` L ${width} ${height} L 0 ${height} Z`;
+    svg.innerHTML = `<path class="chart-fill" d="${area}"></path><path class="chart-line" d="${line}"></path>`;
+  }
+
+  async function loadChart(){
+    try{
+      const res = await fetch("/api/public/chart?days=7", {cache:"no-store"});
+      const data = await res.json();
+      if(res.ok) renderChart(data.points || []);
+    }catch(e){}
+  }
+
   function renderToday(data){
     $("updatedAt").textContent = UPDATED_LABEL + formatUpdatedAt(data.updated_at);
     $("price").textContent = fmtPrice(data?.gold?.price_usd);
@@ -3447,6 +3645,7 @@ TRADE_GUIDE_TEMPLATE = """
 
   $("btnReload").addEventListener("click", loadToday);
 
+  if (typeof loadChart === "function") loadChart();
   if(!renderInitial()){
     loadToday();
   }
@@ -3455,15 +3654,7 @@ TRADE_GUIDE_TEMPLATE = """
 
 ARCHIVE_BODY_INNER = """
 <div class="wrap">
-  <header>
-    <div class="brand"><a href="/">__APP_NAME__</a></div>
-    <div class="nav">
-      <a href="/">Analyse</a>
-      <a href="/news">News</a>
-      <a href="/nyheter">Nyheter</a>
-      <a class="cta" href="/premium">Premium</a>
-    </div>
-  </header>
+  __SITE_HEADER__
 
   __NAV_TABS__
 
@@ -3680,16 +3871,7 @@ ARCHIVE_BODY_INNER = """
 
 SUCCESS_TEMPLATE = """
 <div class="wrap">
-  <header>
-    <div class="brand"><a href="/">__APP_NAME__</a></div>
-    <div class="nav">
-      <a href="/">Analyse</a>
-      <a href="/archive">Arkiv</a>
-      <a href="/news">News</a>
-      <a href="/nyheter">Nyheter</a>
-      <a class="cta" href="/premium">Premium</a>
-    </div>
-  </header>
+  __SITE_HEADER__
 
   <section class="hero">
     <h1>Betaling registrert</h1>
@@ -3719,16 +3901,7 @@ SUCCESS_TEMPLATE = """
 
 LEGAL_PAGE_TEMPLATE = """
 <div class="wrap">
-  <header>
-    <div class="brand"><a href="/">__APP_NAME__</a></div>
-    <div class="nav">
-      <a href="/">Analyse</a>
-      <a href="/archive">Arkiv</a>
-      <a href="/news">News</a>
-      <a href="/nyheter">Nyheter</a>
-      <a class="cta" href="/premium">Premium</a>
-    </div>
-  </header>
+  __SITE_HEADER__
 
   <section class="hero">
     <h1>__TITLE__</h1>
@@ -3923,6 +4096,8 @@ def seo_landing(
         SEO_LANDING_TEMPLATE,
         {
             "__APP_NAME__": _escape_html(APP_NAME),
+            "__SITE_HEADER__": site_header(nav_active),
+            "__CHART_HTML__": chart_html,
             "__H1__": _escape_html(h1),
             "__INTRO__": _escape_html(intro),
             "__FOOTER__": footer_links(is_en=is_en),
@@ -3990,6 +4165,8 @@ def trade_guide_page(
         TRADE_GUIDE_TEMPLATE,
         {
             "__APP_NAME__": _escape_html(APP_NAME),
+            "__SITE_HEADER__": site_header(nav_active),
+            "__CHART_HTML__": chart_html,
             "__H1__": _escape_html(h1),
             "__INTRO__": _escape_html(intro),
             "__NAV_TABS__": nav_tabs(nav_active),
@@ -4027,6 +4204,7 @@ def legal_page(request: Request, path: str, title: str, intro: str, content_html
         LEGAL_PAGE_TEMPLATE,
         {
             "__APP_NAME__": _escape_html(APP_NAME),
+            "__SITE_HEADER__": site_header("premium"),
             "__TITLE__": _escape_html(title),
             "__INTRO__": _escape_html(intro),
             "__CONTENT__": content_html,
@@ -4170,9 +4348,13 @@ def _fallback_news_summary(lang: str, article_type: str) -> str:
     if lang == "en":
         if article_type == "analysis":
             return "Daily gold price forecast and XAUUSD analysis for the next 24 to 72 hours."
+        if article_type == "market_driver":
+            return "Extra gold market driver article triggered by larger market moves or unusually important macro headlines."
         return "Daily gold market update covering macro drivers, USD, yields, inflation and sentiment."
     if article_type == "analysis":
         return "Daglig gullpris-analyse og scenario for de neste 24 til 72 timene."
+    if article_type == "market_driver":
+        return "Ekstra market driver-sak som bare publiseres når markedet beveger seg mer enn normalt eller nyhetsbildet er uvanlig sterkt."
     return "Daglig markedssak om gullpris, renter, inflasjon og stemning i markedet."
 
 
@@ -4349,7 +4531,8 @@ def build_daily_news_articles(force_date: Optional[str] = None) -> List[Dict[str
 
     out: List[Dict[str, Any]] = []
 
-    for article_type, slug_base, _title_base in EN_NEWS_TOPICS:
+    extra_en = [("market_driver", "gold-market-driver", "Gold market driver")] if should_generate_market_driver(snapshot, headlines) else []
+    for article_type, slug_base, _title_base in EN_NEWS_TOPICS + extra_en:
         slug = slugify(f"{slug_base}-{day}")
         summary = _fallback_news_summary("en", article_type)
         title = improve_generated_title("en", article_type, day, summary)
@@ -4370,7 +4553,8 @@ def build_daily_news_articles(force_date: Optional[str] = None) -> List[Dict[str
             }
         )
 
-    for article_type, slug_base, _title_base in NO_NEWS_TOPICS:
+    extra_no = [("market_driver", "gull-market-driver", "Gull market driver")] if should_generate_market_driver(snapshot, headlines) else []
+    for article_type, slug_base, _title_base in NO_NEWS_TOPICS + extra_no:
         slug = slugify(f"{slug_base}-{day}")
         summary = _fallback_news_summary("no", article_type)
         title = improve_generated_title("no", article_type, day, summary)
@@ -4475,17 +4659,7 @@ def render_news_index_page(request: Request, lang: str) -> HTMLResponse:
 
     body = f"""
     <div class="wrap">
-      <header>
-        <div class="brand"><a href="/">{_escape_html(APP_NAME)}</a></div>
-        <div class="nav">
-          <a href="/">Analyse</a>
-          <a href="/gullpris">Gullpris</a>
-          <a href="/archive">Arkiv</a>
-          <a href="/news">News</a>
-          <a href="/nyheter">Nyheter</a>
-          <a class="cta" href="/premium">Premium</a>
-        </div>
-      </header>
+      {site_header("news" if lang == "en" else "nyheter")}
 
       <section class="hero">
         <h1>{_escape_html(h1)}</h1>
@@ -4524,17 +4698,7 @@ def render_news_archive_list(
 
     body = f"""
     <div class="wrap">
-      <header>
-        <div class="brand"><a href="/">{_escape_html(APP_NAME)}</a></div>
-        <div class="nav">
-          <a href="/">Analyse</a>
-          <a href="/gullpris">Gullpris</a>
-          <a href="/archive">Arkiv</a>
-          <a href="/news">News</a>
-          <a href="/nyheter">Nyheter</a>
-          <a class="cta" href="/premium">Premium</a>
-        </div>
-      </header>
+      {site_header("news" if lang == "en" else "nyheter")}
 
       <section class="hero">
         <h1>{_escape_html(title)}</h1>
@@ -4612,17 +4776,7 @@ def render_news_article_page(request: Request, article: Dict[str, Any]) -> HTMLR
 
     body = f"""
     <div class="wrap">
-      <header>
-        <div class="brand"><a href="/">{_escape_html(APP_NAME)}</a></div>
-        <div class="nav">
-          <a href="/">Analyse</a>
-          <a href="/gullpris">Gullpris</a>
-          <a href="/archive">Arkiv</a>
-          <a href="/news">News</a>
-          <a href="/nyheter">Nyheter</a>
-          <a class="cta" href="/premium">Premium</a>
-        </div>
-      </header>
+      {site_header("news" if lang == "en" else "nyheter")}
 
       <section class="hero">
         <h1>{_escape_html(title)}</h1>
@@ -4676,7 +4830,7 @@ def analysis_redirect():
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
-    title = "Gullpris i dag 📈 analyse, prognose og signal for gull (XAUUSD)"
+    title = "Gullpris i dag – analyse, prognose og signal for gull (XAUUSD)"
     desc = "Gullpris i dag med daglig analyse, prognose og signal for gull (XAUUSD). Følg trend, makro og markedssignal."
 
     initial_payload = get_public_today_payload("analysis")
@@ -4692,6 +4846,8 @@ def index(request: Request) -> HTMLResponse:
             "__APP_NAME__": _escape_html(APP_NAME),
             "__DESC__": _escape_html(desc),
             "__FOOTER__": footer_links(),
+            "__SITE_HEADER__": site_header("analysis"),
+            "__CHART_HTML__": chart_html,
             "__NAV_TABS__": nav_tabs("analysis"),
             "__INITIAL_JSON__": json_for_html(initial_payload),
             "__LATEST_NEWS__": latest_news_html,
@@ -4699,6 +4855,7 @@ def index(request: Request) -> HTMLResponse:
             "__AUTH_BOX__": auth_login_box(next_url="/", sent=sent, email=sent_email),
             "__KEY_BOX__": key_fallback_box(),
             "__GUIDE_LINK__": internal_trade_guide_link("no"),
+            "__AFFILIATE_BOX__": affiliate_box("no"),
             "__CARD_TITLE__": "Gullpris i dag",
             "__UPDATED_LOADING__": "Oppdaterer…",
             "__CHANGE_LOADING__": "Endring: ⏳",
@@ -4764,6 +4921,7 @@ def premium_page(request: Request, session_token: Optional[str] = Cookie(default
         {
             "__APP_NAME__": _escape_html(APP_NAME),
             "__FOOTER__": footer_links(),
+            "__SITE_HEADER__": site_header("premium"),
             "__NAV_TABS__": nav_tabs("premium"),
             "__AUTH_BOX__": auth_login_box(next_url="/premium", sent=sent, email=sent_email),
             "__KEY_BOX__": key_fallback_box(),
@@ -4950,6 +5108,7 @@ def success_page(request: Request, session_id: Optional[str] = None) -> HTMLResp
         SUCCESS_TEMPLATE,
         {
             "__APP_NAME__": _escape_html(APP_NAME),
+            "__SITE_HEADER__": site_header("premium"),
             "__KEY__": _escape_html(key),
             "__KEY_RAW__": _escape_html(key),
             "__STATUS__": _escape_html(status_text),
@@ -5075,11 +5234,11 @@ def page_gullpris(request: Request) -> HTMLResponse:
     )
 
 
-@app.get("/trade-gull", response_class=HTMLResponse)
+@app.get("/handle-gull", response_class=HTMLResponse)
 def page_trade_gull(request: Request) -> HTMLResponse:
     return trade_guide_page(
         request,
-        path="/trade-gull",
+        path="/handle-gull",
         title="Hvordan trade gull | XAUUSD, trading og investering",
         desc="Guide til hvordan man kan trade gull, hva XAUUSD er, forskjellen på trading og investering, og hvordan en plattform som eToro kan brukes.",
         h1="Hvordan trade gull",
@@ -5091,7 +5250,7 @@ def page_trade_gull(request: Request) -> HTMLResponse:
 
 @app.get("/hvordan-trade-gull", response_class=HTMLResponse)
 def page_hvordan_trade_gull():
-    return RedirectResponse(url="/trade-gull", status_code=301)
+    return RedirectResponse(url="/handle-gull", status_code=301)
 
 
 @app.get("/trade-gold", response_class=HTMLResponse)
@@ -5117,6 +5276,160 @@ def page_how_to_trade_gold():
 def page_gullpris_head() -> Response:
     return Response(status_code=200)
 
+
+
+
+@app.get("/en", response_class=HTMLResponse)
+def page_en_home():
+    return RedirectResponse(url="/gold-price", status_code=302)
+
+
+@app.get("/gold-price", response_class=HTMLResponse)
+def page_gold_price(request: Request) -> HTMLResponse:
+    seo_text_html = """
+    <section class="wrap" style="padding-top:0">
+      <div class="card">
+        <h2>Gold price today</h2>
+        <p>Follow the live gold price, daily analysis, forecast, signal and market drivers in one place. This English surface mirrors the Norwegian core pages so the same functions are available in both languages.</p>
+      </div>
+    </section>
+    """
+    return seo_landing(
+        request,
+        path="/gold-price",
+        title="Gold price today | daily gold price, signal and news",
+        desc="Gold price today with daily analysis, forecast, signal and relevant gold news in English.",
+        h1="Gold price today",
+        intro="Live gold price, signal and the main market drivers in English.",
+        mode="analysis_en",
+        nav_active="gold_price",
+        lang="en",
+        seo_text_html=seo_text_html,
+        include_affiliate=True,
+        include_trade_link=True,
+    )
+
+
+@app.get("/gold-price-analysis", response_class=HTMLResponse)
+def page_gold_price_analysis(request: Request) -> HTMLResponse:
+    return seo_landing(
+        request,
+        path="/gold-price-analysis",
+        title="Gold price analysis | daily gold analysis and macro drivers",
+        desc="Daily gold price analysis in English with signal, trend and macro drivers.",
+        h1="Gold price analysis",
+        intro="Daily English analysis of gold with focus on trend, signal and macro.",
+        mode="analysis_en",
+        nav_active="gold_analysis",
+        lang="en",
+        include_affiliate=True,
+        include_trade_link=True,
+    )
+
+
+@app.get("/gold-signal", response_class=HTMLResponse)
+def page_gold_signal(request: Request) -> HTMLResponse:
+    return seo_landing(
+        request,
+        path="/gold-signal",
+        title="Gold signal | bullish, bearish or neutral",
+        desc="Gold signal with explanation in English. Premium includes signal history and archive.",
+        h1="Gold signal",
+        intro="See today's signal and why it is set.",
+        mode="signal_en",
+        nav_active="gold_signal",
+        lang="en",
+    )
+
+
+@app.get("/xauusd-en", response_class=HTMLResponse)
+def page_xauusd_en(request: Request) -> HTMLResponse:
+    return seo_landing(
+        request,
+        path="/xauusd-en",
+        title="XAUUSD analysis | gold vs USD",
+        desc="English XAUUSD analysis: gold versus USD, rates, dollar and market drivers.",
+        h1="XAUUSD",
+        intro="Spot gold versus USD with focus on yields, the dollar and risk sentiment.",
+        mode="xauusd_en",
+        nav_active="xauusd_en",
+        lang="en",
+    )
+
+
+@app.get("/handle-gull", response_class=HTMLResponse)
+def page_handle_gull(request: Request) -> HTMLResponse:
+    return trade_guide_page(
+        request,
+        path="/handle-gull",
+        title="Hvordan handle gull | XAUUSD, plattform og risiko",
+        desc="Guide til hvordan du kan handle gull, hva XAUUSD er og hva du bør vite før du starter.",
+        h1="Hvordan handle gull",
+        intro="En enkel guide til gullhandel, XAUUSD og hva du bør vite før du handler gull.",
+        lang="no",
+        nav_active="trade_gull",
+    )
+
+
+@app.get("/premium-en", response_class=HTMLResponse)
+def premium_page_en(request: Request, session_token: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE_NAME)) -> HTMLResponse:
+    auth = resolve_auth_context(session_token=session_token, x_api_key=None)
+    sent = request.query_params.get("sent") == "1"
+    sent_email = str(request.query_params.get("email") or "")
+    latest_news_html = render_recent_articles_box("en")
+    body = _replace_many(
+        PREMIUM_BODY_TEMPLATE,
+        {
+            "__APP_NAME__": _escape_html(APP_NAME),
+            "__SITE_HEADER__": site_header("premium_en"),
+            "__FOOTER__": footer_links(is_en=True),
+            "__NAV_TABS__": nav_tabs("premium_en"),
+            "__AUTH_BOX__": auth_login_box(next_url="/premium-en", sent=sent, email=sent_email, is_en=True),
+            "__KEY_BOX__": key_fallback_box(is_en=True),
+            "__LATEST_NEWS__": latest_news_html,
+        },
+    )
+    body = body.replace("Mer data, mindre støy. Daglig premium-rapport, signalhistorikk, flere nyheter og arkiv.", "More data, less noise. Daily premium report, signal history, more headlines and archive.")
+    body = body.replace("Dette får du", "What you get")
+    body = body.replace("Kjøp Premium", "Buy Premium")
+    body = body.replace("Skriv e-post og gå til Stripe checkout.", "Enter your email and continue to Stripe checkout.")
+    body = body.replace("Hva rapporten inneholder", "What the report includes")
+    body = body.replace("Daglig", "Daily")
+    body = body.replace("Kjøp premium", "Buy premium")
+    body = body.replace("Signalhistorikk (siste 30) + treffsikkerhet", "Signal history (last 30) + hit rate")
+    body = body.replace("Arkiv med 7d/30d etter signal", "Archive with 7d/30d after signal")
+    body = body.replace("Daglig premium-rapport på norsk, vesentlig lengre enn gratisanalyse", "Extended daily premium report")
+    body = body.replace("Flere nyheter enn gratisversjonen", "More headlines than the free version")
+    body = body.replace("E-postvarsler ved signalendring og daglig utsendelse", "Email alerts for signal changes and daily delivery")
+    body = body.replace("E-post for kjøp", "Email for purchase")
+    body = body.replace("Executive summary og marked akkurat nå", "Executive summary and current market picture")
+    body = body.replace("Teknisk bilde med støtte, motstand, SMA og momentum", "Technical picture with support, resistance, SMA and momentum")
+    body = body.replace("Makrodrivere og XAUUSD-vinkel", "Macro drivers and XAUUSD angle")
+    body = body.replace("Hva som styrker og hva som bryter signalet", "What strengthens and what breaks the signal")
+    body = body.replace("Watchlist neste 24–72t", "Watchlist for the next 24–72h")
+    body = body.replace("Konklusjon med samlet vurdering", "Conclusion with overall assessment")
+    body = body.replace("Skriv inn gyldig e-post.", "Enter a valid email.")
+    body = body.replace("Åpner Stripe checkout…", "Opening Stripe checkout…")
+    body = body.replace("Feil: ", "Error: ")
+    if auth.get("authenticated") and auth.get("premium_active"):
+        body = body.replace("<section class=\"grid\">", '<div class="card" style="margin-bottom:16px"><div class="title"><h2>Signed in</h2><div class="muted">Magic link</div></div><p class="muted">Signed in as <b>' + _escape_html(str(auth.get("email") or "")) + '</b>.</p><div class="btnrow"><button onclick="location.href=\'/archive-en\'">Open archive</button><button onclick="location.href=\'/auth/logout\'">Log out</button></div></div><section class="grid">', 1)
+    return HTMLResponse(html_shell(request, title="Gullbrief Premium – gold price analysis, signal history and archive", description="Premium in English: archive, signal history, more market headlines and the longer daily report.", path="/premium-en", body_html=body, lang="en"))
+
+
+@app.get("/archive-en", response_class=HTMLResponse)
+def archive_page_en(request: Request) -> HTMLResponse:
+    title = "Gullbrief archive – signal history and post-signal returns"
+    desc = "See the latest snapshots for free. Premium includes full history, signal history and 7d/30d performance after signals."
+    ensure_snapshot_persisted_from_public()
+    dates = get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)
+    links = [f'<li><a href="/archive/{_escape_html(d)}">Archive {_escape_html(d)}</a></li>' for d in dates[:60]]
+    sent = request.query_params.get("sent") == "1"
+    sent_email = str(request.query_params.get("email") or "")
+    archive_map_html = ("<div class='wrap archive-map'><div class='card' style='margin-top:12px'><div style='font-size:18px;font-weight:900'>Archive map</div><div class='muted'>Links to the latest days.</div>" + f"<ul>{''.join(links) if links else '<li class=\"muted\">No archive days yet.</li>'}</ul></div></div>")
+    body = _replace_many(ARCHIVE_BODY_INNER, {"__APP_NAME__": _escape_html(APP_NAME), "__SITE_HEADER__": site_header("archive_en"), "__FOOTER__": footer_links(is_en=True), "__NAV_TABS__": nav_tabs("archive_en"), "__AUTH_BOX__": auth_login_box(next_url="/archive-en", sent=sent, email=sent_email, is_en=True), "__KEY_BOX__": key_fallback_box(is_en=True)})
+    body = archive_map_html + body
+    body = body.replace("Teaser (gratis)", "Teaser (free)").replace("Siste 3 snapshots. Full historikk ligger bak premium.", "Latest 3 snapshots. Full history is inside Premium.").replace("Premium", "Premium").replace("Logg inn med magic link, eller bruk premium-nøkkel som fallback.", "Sign in with a magic link, or use a premium key as fallback.")
+    return HTMLResponse(html_shell(request, title=title, description=desc, path="/archive-en", body_html=body, lang="en"))
 
 @app.get("/news", response_class=HTMLResponse)
 def news_index_page(request: Request) -> HTMLResponse:
@@ -5463,6 +5776,119 @@ def privacy_page(request: Request) -> HTMLResponse:
     <p>Du kan be om innsyn, retting eller sletting av opplysninger ved å kontakte oss på <a href="mailto:{_escape_html(CONTACT_EMAIL)}">{_escape_html(CONTACT_EMAIL)}</a>.</p>
     """
     return legal_page(request, path="/privacy", title="Privacy", intro="Informasjon om hvordan Gullbrief behandler personopplysninger.", content_html=content)
+
+
+# =============================================================================
+# Public chart / rebuild helpers
+# =============================================================================
+
+def public_chart_points(days: int = 7) -> List[Dict[str, Any]]:
+    days = max(2, min(days, 30))
+    rows = get_history_rows_resilient(limit=max(days, 60))
+    points: List[Dict[str, Any]] = []
+    for r in rows[-days:]:
+        close = safe_float(r.get("price_usd"))
+        ts = str(r.get("updated_at") or "")
+        if close is not None and ts:
+            points.append({"ts": ts, "close": close})
+    if len(points) >= 2:
+        return points
+    try:
+        chart = fetch_yahoo_chart(YAHOO_SYMBOL, range_="1mo", interval="1d")
+        result = chart["chart"]["result"][0]
+        closes = result["indicators"]["quote"][0]["close"]
+        stamps = result.get("timestamp") or []
+        for stamp, close in zip(stamps, closes):
+            v = safe_float(close)
+            if v is None:
+                continue
+            points.append({"ts": datetime.fromtimestamp(int(stamp), tz=timezone.utc).isoformat(), "close": v})
+    except Exception:
+        pass
+    return points[-days:]
+
+
+def rebuild_history_from_yahoo(days: int = 7) -> Dict[str, Any]:
+    days = max(1, min(days, 30))
+    existing = {date_yyyy_mm_dd_from_iso_or_rss(str(r.get("updated_at") or "")) for r in read_history(limit=5000)}
+    chart = fetch_yahoo_chart(YAHOO_SYMBOL, range_="3mo", interval="1d")
+    result = chart["chart"]["result"][0]
+    closes = result["indicators"]["quote"][0]["close"]
+    stamps = result.get("timestamp") or []
+    inserted = 0
+    points = []
+    for stamp, close in zip(stamps, closes):
+        v = safe_float(close)
+        if v is None:
+            continue
+        ts = datetime.fromtimestamp(int(stamp), tz=timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0).isoformat()
+        day = date_yyyy_mm_dd_from_iso_or_rss(ts)
+        if not day:
+            continue
+        points.append((day, ts, v))
+    for day, ts, v in points[-days:]:
+        if day in existing:
+            continue
+        rec = {
+            "updated_at": ts,
+            "version": APP_VERSION,
+            "symbol": YAHOO_SYMBOL,
+            "price_usd": v,
+            "change_pct": None,
+            "signal": "neutral",
+            "signal_reason": "Rebuilt from Yahoo daily history after deploy.",
+            "rsi14": None,
+            "trend_score": None,
+            "levels": {},
+            "macro_summary": "Historical snapshot rebuilt after deploy.",
+            "analysis": "Historical snapshot rebuilt after deploy.",
+            "forecast": "",
+            "forecast_en": "",
+            "xauusd": "",
+            "premium_insight": "",
+            "headlines": [],
+        }
+        store_snapshot_if_needed(rec)
+        inserted += 1
+    return {"ok": True, "inserted": inserted, "days": days}
+
+
+def should_generate_market_driver(snapshot: Dict[str, Any], headlines: List[Dict[str, str]]) -> bool:
+    change_pct = safe_float(snapshot.get("change_pct"))
+    signal = str(snapshot.get("signal") or "neutral").lower()
+    if change_pct is not None and abs(change_pct) >= 1.2:
+        return True
+    blob = " ".join(_headline_titles(headlines, 8)).lower()
+    trigger_words = ["fed", "inflation", "cpi", "pce", "yields", "treasury", "war", "geopolitical", "central bank"]
+    hits = sum(1 for word in trigger_words if word in blob)
+    return hits >= 2 or signal in {"bullish", "bearish"}
+
+
+@app.get("/api/public/chart")
+def api_public_chart(days: int = 7):
+    return JSONResponse({"points": public_chart_points(days), "days": max(2, min(days, 30))})
+
+
+@app.post("/api/tasks/rebuild-history")
+def api_rebuild_history(days: int = 7, x_api_key: Optional[str] = Header(default=None)):
+    if x_api_key != ADMIN_API_KEY:
+        return JSONResponse({"message": "UNAUTHORIZED"}, status_code=401)
+    try:
+        return JSONResponse(rebuild_history_from_yahoo(days=days))
+    except Exception as e:
+        return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
+
+
+@app.post("/api/tasks/rebuild-last-week")
+def api_rebuild_last_week(x_api_key: Optional[str] = Header(default=None)):
+    if x_api_key != ADMIN_API_KEY:
+        return JSONResponse({"message": "UNAUTHORIZED"}, status_code=401)
+    try:
+        hist = rebuild_history_from_yahoo(days=7)
+        news = generate_news_range(days=7)
+        return JSONResponse({"ok": True, "history": hist, "news": news})
+    except Exception as e:
+        return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
 
 
 # =============================================================================
@@ -5881,6 +6307,7 @@ def health():
             "session_cookie_name": SESSION_COOKIE_NAME,
             "etoro_no_configured": bool(ETORO_AFFILIATE_NO),
             "etoro_en_configured": bool(ETORO_AFFILIATE_EN),
+            "english_surface_enabled": True,
             "version": APP_VERSION,
         }
     )
@@ -5941,13 +6368,19 @@ def sitemap_xml(request: Request):
         "/gullpris-analyse",
         "/gullpris-prognose",
         "/gullpris-signal",
+        "/gold-price",
+        "/gold-price-analysis",
         "/gold-price-forecast",
+        "/gold-signal",
         "/xauusd",
-        "/trade-gull",
+        "/xauusd-en",
+        "/handle-gull",
         "/trade-gold",
         "/news",
         "/nyheter",
         "/premium",
+        "/premium-en",
+        "/archive-en",
         "/archive",
         "/kontakt",
         "/terms",
