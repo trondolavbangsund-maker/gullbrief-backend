@@ -6395,7 +6395,20 @@ def sitemap_xml(request: Request):
 @app.get("/news-sitemap.xml")
 def news_sitemap(request: Request):
     base = get_base_url(request)
-    articles = [a for a in get_all_news_articles() if str(a.get("published_at") or "")]
+    cutoff = utc_now() - timedelta(days=2)
+
+    articles: List[Dict[str, Any]] = []
+    for article in get_all_news_articles():
+        published_at = str(article.get("published_at") or "")
+        dt = parse_iso_or_rss(published_at)
+        if not published_at or not dt:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if dt >= cutoff:
+            articles.append(article)
+
+    articles.sort(key=lambda a: str(a.get("published_at") or ""), reverse=True)
 
     parts = ['<?xml version="1.0" encoding="UTF-8"?>']
     parts.append('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">')
@@ -6403,8 +6416,12 @@ def news_sitemap(request: Request):
     for article in articles[:200]:
         lang = "en" if str(article.get("lang") or "") == "en" else "no"
         path = str(article.get("path") or "")
+        if not path:
+            continue
         title = str(normalize_article_for_display(article).get("title") or APP_NAME)
-        published_at = str(article.get("published_at") or iso_now())
+        published_at = str(article.get("published_at") or "")
+        if not published_at:
+            continue
 
         parts.append(
             "<url>"
