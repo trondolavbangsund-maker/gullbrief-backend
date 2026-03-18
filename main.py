@@ -2275,8 +2275,7 @@ def site_header(active: str) -> str:
             ("/archive", "Arkiv"),
             ("/premium", "Premium"),
         ]
-    links = "".join(f'<a href="{href}">{_escape_html(label)}</a>' for href, label in nav)
-    return f'<header><div class="brand"><a href="{home_href}">{_escape_html(APP_NAME)}</a></div><div class="nav">{links}</div>{language_switch(active)}</header>'
+    return f'<header><div class="brand"><a href="{home_href}">{_escape_html(APP_NAME)}</a></div>{language_switch(active)}</header>'
 
 
 def nav_tabs(active: str) -> str:
