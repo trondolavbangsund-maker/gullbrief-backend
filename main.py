@@ -2020,7 +2020,7 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
     elif mode == "xauusd":
         summary = xauusd_text or analysis_text
     elif mode == "xauusd_en":
-         summary = forecast_en or analysis_en or "Gold remains highly sensitive to the US dollar, Treasury yields and broader risk sentiment."
+        summary = forecast_en or analysis_en or "Gold remains highly sensitive to the US dollar, Treasury yields and broader risk sentiment."
     elif mode == "signal_en":
         if signal_state == "BULLISH":
             base = "Today's signal is BULLISH. Gold remains in a constructive short-term technical structure."
@@ -2251,30 +2251,6 @@ def language_switch(active: str) -> str:
 def site_header(active: str) -> str:
     current_is_en = is_english_active(active)
     home_href = "/gold-price" if current_is_en else "/"
-    if current_is_en:
-        nav = [
-            ("/gold-price", "Gold price"),
-            ("/gold-price-analysis", "Analysis"),
-            ("/gold-price-forecast", "Forecast"),
-            ("/xauusd-en", "XAUUSD"),
-            ("/gold-signal", "Signal"),
-            ("/news", "News"),
-            ("/trade-gold", "Trade gold"),
-            ("/archive-en", "Archive"),
-            ("/premium-en", "Premium"),
-        ]
-    else:
-        nav = [
-            ("/gullpris", "Gullpris"),
-            ("/gullpris-analyse", "Analyse"),
-            ("/gullpris-prognose", "Prognose"),
-            ("/xauusd", "XAUUSD"),
-            ("/gullpris-signal", "Signal"),
-            ("/nyheter", "Nyheter"),
-            ("/handle-gull", "Handle gull"),
-            ("/archive", "Arkiv"),
-            ("/premium", "Premium"),
-        ]
     return f'<header><div class="brand"><a href="{home_href}">{_escape_html(APP_NAME)}</a></div>{language_switch(active)}</header>'
 
 
@@ -5862,7 +5838,6 @@ def should_generate_market_driver(snapshot: Dict[str, Any], headlines: List[Dict
     blob = " ".join(_headline_titles(headlines, 8)).lower()
     trigger_words = ["fed", "inflation", "cpi", "pce", "yields", "treasury", "war", "geopolitical", "central bank"]
     hits = sum(1 for word in trigger_words if word in blob)
-
     move_ok = change_pct is not None and abs(change_pct) >= 0.8
 
     return (
@@ -6395,38 +6370,17 @@ def sitemap_xml(request: Request):
         "/kontakt",
         "/terms",
         "/privacy",
-        "/feed.xml",
     ]
 
-    archive_urls = [f"/archive/{d}" for d in get_archive_dates(last_n_days=SITEMAP_ARCHIVE_DAYS)]
     news_urls = [str(a.get("path") or "") for a in get_all_news_articles() if str(a.get("path") or "")]
-    archive_news_urls = []
-
-    for lang_prefix, lang_code in [("/news", "en"), ("/nyheter", "no")]:
-        years = unique_news_years(lang_code)
-
-        for year in years:
-            archive_news_urls.append(f"{lang_prefix}/{year}")
-
-            months = unique_news_months(lang_code, year)
-
-            for ym in months:
-                y, m = ym.split("-")
-                archive_news_urls.append(f"{lang_prefix}/{y}/{m}")
-
-                days = unique_news_days(lang_code, y, m)
-
-                for d in days:
-                    yy, mm, dd = d.split("-")
-                    archive_news_urls.append(f"{lang_prefix}/{yy}/{mm}/{dd}")
 
     parts = ['<?xml version="1.0" encoding="UTF-8"?>']
     parts.append('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">')
 
-    for p in static_urls + archive_urls + news_urls + archive_news_urls:
+    for p in static_urls + news_urls:
         if not p:
             continue
-        changefreq = "daily" if p not in ("/premium", "/archive", "/terms", "/privacy", "/kontakt") else "weekly"
+        changefreq = "daily" if p not in ("/premium", "/premium-en", "/archive", "/archive-en", "/terms", "/privacy", "/kontakt") else "weekly"
         parts.append(
             "<url>"
             f"<loc>{_escape_html(base + p)}</loc>"
