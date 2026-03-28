@@ -2615,13 +2615,14 @@ COMMON_STYLE = """
     background:rgba(212,175,55,.05);
   }
   .newslist h3{margin-top:0}
-  .article-body p{margin:0 0 16px;font-size:18px;line-height:1.75}
-  .article-body h2{margin:26px 0 10px;font-size:22px;font-family:ui-serif,Georgia,Times}
-  .article-body h3{margin:22px 0 8px;font-size:19px;font-weight:800;color:#f3e8b3}
+  .article-body{max-width:900px}
+  .article-body p{margin:0 0 14px;font-size:17px;line-height:1.72;color:var(--text)}
+  .article-body h2{margin:24px 0 10px;font-size:21px;font-family:ui-serif,Georgia,Times;color:#f3e8b3}
+  .article-body h3{margin:18px 0 8px;font-size:18px;font-weight:800;color:#e7d9a2}
   .article-body a{color:#f3e8b3;text-decoration:underline;text-underline-offset:3px}
   .article-body ul{margin:0 0 18px;padding-left:20px}
-  .article-body li{margin:8px 0;font-size:17px;line-height:1.65}
-  .article-cta{margin:22px 0 0;padding:14px 16px;border-radius:14px;border:1px solid rgba(212,175,55,.22);background:rgba(212,175,55,.07)}
+  .article-body li{margin:8px 0;font-size:16px;line-height:1.62}
+  .article-cta{margin:20px 0 0;padding:14px 16px;border-radius:14px;border:1px solid rgba(212,175,55,.18);background:rgba(212,175,55,.05)}
   .article-cta a{font-weight:800}
   .content-block{margin-top:16px}
   .content-block h2{
@@ -2755,8 +2756,9 @@ def html_shell(
 # =============================================================================
 
 def footer_links(is_en: bool = False) -> str:
+    aff = affiliate_box("en" if is_en else "no")
     if is_en:
-        return """
+        return aff + """
         <footer>
           <div class="links">
             <a href="/gold-price-analysis">Analysis</a>
@@ -2776,7 +2778,7 @@ def footer_links(is_en: bool = False) -> str:
         </footer>
         """
 
-    return """
+    return aff + """
     <footer>
       <div class="links">
         <a href="/gullpris-analyse">Analyse</a>
@@ -4086,7 +4088,7 @@ def seo_landing(
 
     key_box_html = key_fallback_box(is_en=is_en)
     latest_news_html = render_recent_articles_box(articles_lang)
-    affiliate_html = affiliate_box(lang=lang) if include_affiliate else ""
+    affiliate_html = ""
     guide_link_html = internal_trade_guide_link(lang=lang) if include_trade_link else ""
 
     body = _replace_many(
@@ -4175,7 +4177,7 @@ def trade_guide_page(
             "__DATE_LOCALE__": "en-US" if lang == "en" else "nb-NO",
             "__MODE__": mode,
             "__INITIAL_JSON__": json_for_html(initial_payload),
-            "__AFFILIATE_BOX__": affiliate_box(lang=lang),
+            "__AFFILIATE_BOX__": "",
             "__CONTENT_HTML__": trade_guide_content_html(lang=lang),
             "__ANALYSIS_LINK__": "/gold-price-forecast" if lang == "en" else "/gullpris-analyse",
             "__ANALYSIS_BTN__": "Read forecast" if lang == "en" else "Les analyse",
@@ -4748,16 +4750,73 @@ def _prepare_article_text(text: str) -> str:
     if not s:
         return ""
 
+    s = re.sub(r"\*\*\s*(#{1,3}\s+)", r"\n\1", s)
     s = re.sub(r"\s*(#{1,3}\s+)", r"\n\1", s)
     s = re.sub(r"\s+(?=-\s)", "\n", s)
+    s = re.sub(r"\s+(?=\d+\.\s)", "\n", s)
     s = re.sub(
         r"\s+(?=(?:Full analyse og signaloppdatering:|Full analysis and signal update:))",
         "\n\n",
         s,
         flags=re.IGNORECASE,
     )
+
+    known_headings = [
+        "Tekniske nivåer setter begrensninger",
+        "Rentedrevet og dollarfokus",
+        "Markedsstemningen og risikoaversjon",
+        "Geopolitiske og økonomiske drivere",
+        "Hva betyr dette for gullprisen framover",
+        "Nøkkelobservasjoner",
+        "Oppsummert",
+        "Technical levels still cap the upside",
+        "Rates and dollar remain central",
+        "Market sentiment and risk aversion",
+        "What matters next for gold",
+        "Key takeaways",
+        "Summary",
+    ]
+    for heading in known_headings:
+        s = re.sub(rf"\s*{re.escape(heading)}\s+", f"\n\n### {heading}\n", s)
+
+    s = re.sub(
+        r"(?m)^([A-ZÆØÅ][A-Za-zÆØÅæøå0-9,/()\-– ]{10,58}?)\s+(?=[A-ZÆØÅ][a-zæøå]{2,}\b)",
+        lambda m: f"### {m.group(1).strip()}\n",
+        s,
+    )
     s = re.sub(r"\n{3,}", "\n\n", s)
     return s.strip()
+
+
+def _split_long_paragraph(paragraph: str) -> List[str]:
+    paragraph = (paragraph or "").strip()
+    if not paragraph:
+        return []
+    if len(paragraph) <= 420:
+        return [paragraph]
+
+    sentences = re.split(r"(?<=[.!?])\s+(?=[A-ZÆØÅ0-9])", paragraph)
+    if len(sentences) <= 1:
+        return [paragraph]
+
+    chunks: List[str] = []
+    current = ""
+    sentence_count = 0
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        candidate = (current + " " + sentence).strip() if current else sentence
+        if current and (len(candidate) > 360 or sentence_count >= 2):
+            chunks.append(current.strip())
+            current = sentence
+            sentence_count = 1
+        else:
+            current = candidate
+            sentence_count += 1
+    if current.strip():
+        chunks.append(current.strip())
+    return chunks or [paragraph]
 
 
 def _article_content_to_html(text: str) -> str:
@@ -4785,7 +4844,8 @@ def _article_content_to_html(text: str) -> str:
         if current:
             paragraph = " ".join([x.strip() for x in current if x.strip()])
             if paragraph.strip():
-                chunks.append(f"<p>{_inline_markdown_to_html(paragraph)}</p>")
+                for piece in _split_long_paragraph(paragraph):
+                    chunks.append(f"<p>{_inline_markdown_to_html(piece)}</p>")
             current = []
 
     for line in lines:
@@ -4806,9 +4866,9 @@ def _article_content_to_html(text: str) -> str:
         elif stripped.startswith("# "):
             heading_level = "h2"
             heading_text = stripped[2:].strip()
-        elif len(stripped) < 90 and not stripped.endswith(".") and not stripped.startswith("-") and not stripped.lower().startswith(("http://", "https://")):
-            heading_level = "h2"
-            heading_text = stripped
+        elif stripped.endswith(":") and len(stripped) < 90:
+            heading_level = "h3"
+            heading_text = stripped[:-1].strip()
 
         if heading_level and heading_text:
             flush_paragraph()
@@ -4821,23 +4881,23 @@ def _article_content_to_html(text: str) -> str:
             list_items.append(_inline_markdown_to_html(stripped[2:].strip()))
             continue
 
-        lowered = stripped.lower()
-        if lowered.startswith("full analyse og signaloppdatering:") or lowered.startswith("full analysis and signal update:"):
+        cta_match = re.search(
+            r"(Full analyse og signaloppdatering:|Full analysis and signal update:)\s*(https?://\S+)",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        if cta_match:
             flush_paragraph()
             flush_list()
-            label, _, rest = stripped.partition(":")
-            rest = rest.strip()
-            if rest.startswith("http://") or rest.startswith("https://"):
-                cta_label = "Gå til Premium" if lowered.startswith("full analyse") else "Go to Premium"
-                chunks.append(
-                    f'<div class="article-cta"><strong>{_escape_html(label)}:</strong> '
-                    f'<a href="{_escape_html(rest)}" target="_blank" rel="noopener noreferrer">{_escape_html(cta_label)}</a></div>'
-                )
-            else:
-                chunks.append(f"<p>{_inline_markdown_to_html(stripped)}</p>")
+            label = cta_match.group(1).strip()
+            url = cta_match.group(2).strip().rstrip(').,')
+            chunks.append(
+                '<div class="article-cta">'
+                f'<a href="{_escape_html(url)}" target="_blank" rel="nofollow">{_escape_html(label)}</a>'
+                '</div>'
+            )
             continue
 
-        flush_list()
         current.append(stripped)
 
     flush_paragraph()
