@@ -4902,6 +4902,7 @@ def index(request: Request) -> HTMLResponse:
         mode="analysis",
         nav_active="gullpris",
         seo_text_html=seo_text_html,
+        include_affiliate=True,
         include_trade_link=True,
     )
 
