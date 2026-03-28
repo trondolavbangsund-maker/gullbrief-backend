@@ -2615,8 +2615,14 @@ COMMON_STYLE = """
     background:rgba(212,175,55,.05);
   }
   .newslist h3{margin-top:0}
-  .article-body p{margin:0 0 16px}
+  .article-body p{margin:0 0 16px;font-size:18px;line-height:1.75}
   .article-body h2{margin:26px 0 10px;font-size:22px;font-family:ui-serif,Georgia,Times}
+  .article-body h3{margin:22px 0 8px;font-size:19px;font-weight:800;color:#f3e8b3}
+  .article-body a{color:#f3e8b3;text-decoration:underline;text-underline-offset:3px}
+  .article-body ul{margin:0 0 18px;padding-left:20px}
+  .article-body li{margin:8px 0;font-size:17px;line-height:1.65}
+  .article-cta{margin:22px 0 0;padding:14px 16px;border-radius:14px;border:1px solid rgba(212,175,55,.22);background:rgba(212,175,55,.07)}
+  .article-cta a{font-weight:800}
   .content-block{margin-top:16px}
   .content-block h2{
     margin:0 0 10px;
@@ -4722,8 +4728,11 @@ def render_news_archive_list(
 
 
 def _auto_link_text_html(text: str) -> str:
-    url_pattern = re.compile(r"(https?://[^\s<]+)")
-    return url_pattern.sub(lambda m: f'<a href="{m.group(1)}" target="_blank" rel="noopener noreferrer">{m.group(1)}</a>', text)
+    url_pattern = re.compile(r"(?P<url>https?://[^\s<]+[^\s<.,;:!?)\]\}])")
+    return url_pattern.sub(
+        lambda m: f'<a href="{m.group("url")}" target="_blank" rel="noopener noreferrer">{m.group("url")}</a>',
+        text,
+    )
 
 
 def _inline_markdown_to_html(text: str) -> str:
@@ -4734,8 +4743,26 @@ def _inline_markdown_to_html(text: str) -> str:
     return s
 
 
+def _prepare_article_text(text: str) -> str:
+    s = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not s:
+        return ""
+
+    s = re.sub(r"\s*(#{1,3}\s+)", r"\n\1", s)
+    s = re.sub(r"\s+(?=-\s)", "\n", s)
+    s = re.sub(
+        r"\s+(?=(?:Full analyse og signaloppdatering:|Full analysis and signal update:))",
+        "\n\n",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
 def _article_content_to_html(text: str) -> str:
-    raw_lines = [line.rstrip() for line in (text or "").splitlines()]
+    prepared = _prepare_article_text(text)
+    raw_lines = [line.rstrip() for line in prepared.splitlines()]
     lines: List[str] = []
     for line in raw_lines:
         stripped = line.strip()
@@ -4779,7 +4806,7 @@ def _article_content_to_html(text: str) -> str:
         elif stripped.startswith("# "):
             heading_level = "h2"
             heading_text = stripped[2:].strip()
-        elif len(stripped) < 90 and not stripped.endswith(".") and not stripped.startswith("-"):
+        elif len(stripped) < 90 and not stripped.endswith(".") and not stripped.startswith("-") and not stripped.lower().startswith(("http://", "https://")):
             heading_level = "h2"
             heading_text = stripped
 
@@ -4794,13 +4821,28 @@ def _article_content_to_html(text: str) -> str:
             list_items.append(_inline_markdown_to_html(stripped[2:].strip()))
             continue
 
+        lowered = stripped.lower()
+        if lowered.startswith("full analyse og signaloppdatering:") or lowered.startswith("full analysis and signal update:"):
+            flush_paragraph()
+            flush_list()
+            label, _, rest = stripped.partition(":")
+            rest = rest.strip()
+            if rest.startswith("http://") or rest.startswith("https://"):
+                cta_label = "Gå til Premium" if lowered.startswith("full analyse") else "Go to Premium"
+                chunks.append(
+                    f'<div class="article-cta"><strong>{_escape_html(label)}:</strong> '
+                    f'<a href="{_escape_html(rest)}" target="_blank" rel="noopener noreferrer">{_escape_html(cta_label)}</a></div>'
+                )
+            else:
+                chunks.append(f"<p>{_inline_markdown_to_html(stripped)}</p>")
+            continue
+
         flush_list()
         current.append(stripped)
 
     flush_paragraph()
     flush_list()
     return '<div class="article-body">' + "".join(chunks) + "</div>"
-
 
 def render_news_article_page(request: Request, article: Dict[str, Any]) -> HTMLResponse:
     article = normalize_article_for_display(article)
@@ -4902,7 +4944,6 @@ def index(request: Request) -> HTMLResponse:
         mode="analysis",
         nav_active="gullpris",
         seo_text_html=seo_text_html,
-        include_affiliate=True,
         include_trade_link=True,
     )
 
