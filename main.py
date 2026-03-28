@@ -2615,15 +2615,15 @@ COMMON_STYLE = """
     background:rgba(212,175,55,.05);
   }
   .newslist h3{margin-top:0}
-  .article-body{max-width:900px}
-  .article-body p{margin:0 0 14px;font-size:17px;line-height:1.72;color:var(--text)}
-  .article-body h2{margin:24px 0 10px;font-size:21px;font-family:ui-serif,Georgia,Times;color:#f3e8b3}
-  .article-body h3{margin:18px 0 8px;font-size:18px;font-weight:800;color:#e7d9a2}
-  .article-body a{color:#f3e8b3;text-decoration:underline;text-underline-offset:3px}
-  .article-body ul{margin:0 0 18px;padding-left:20px}
-  .article-body li{margin:8px 0;font-size:16px;line-height:1.62}
-  .article-cta{margin:20px 0 0;padding:14px 16px;border-radius:14px;border:1px solid rgba(212,175,55,.18);background:rgba(212,175,55,.05)}
-  .article-cta a{font-weight:800}
+  .article-body{max-width:840px}
+  .article-body p{margin:0 0 16px;color:var(--text);font-size:18px;line-height:1.75;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial}
+  .article-body h2{margin:28px 0 10px;font-size:26px;line-height:1.25;font-family:ui-serif,Georgia,Times;color:var(--text);font-weight:800}
+  .article-body ul{margin:0 0 18px 18px;padding:0}
+  .article-body li{margin:8px 0;color:var(--text);font-size:17px;line-height:1.7}
+  .article-body a{color:#d9e6ff;text-decoration:underline;text-underline-offset:2px}
+  .article-body .article-cta{margin-top:26px;padding:18px;border-radius:16px;border:1px solid rgba(212,175,55,.18);background:rgba(255,255,255,.03)}
+  .article-body .article-cta p{margin:0 0 12px;font-size:16px;color:#d8d0b2}
+  .article-body .article-cta a{display:inline-flex;align-items:center;justify-content:center;padding:10px 14px;border-radius:999px;background:var(--gold);color:#10141b;text-decoration:none;font-weight:850}
   .content-block{margin-top:16px}
   .content-block h2{
     margin:0 0 10px;
@@ -2755,10 +2755,11 @@ def html_shell(
 # Templates / boxes
 # =============================================================================
 
-def footer_links(is_en: bool = False) -> str:
-    aff = affiliate_box("en" if is_en else "no")
+def footer_links(is_en: bool = False, include_affiliate: bool = False) -> str:
+    affiliate_html = affiliate_box("en" if is_en else "no") if include_affiliate else ""
     if is_en:
-        return aff + """
+        return f"""
+        {affiliate_html}
         <footer>
           <div class="links">
             <a href="/gold-price-analysis">Analysis</a>
@@ -2778,7 +2779,8 @@ def footer_links(is_en: bool = False) -> str:
         </footer>
         """
 
-    return aff + """
+    return f"""
+    {affiliate_html}
     <footer>
       <div class="links">
         <a href="/gullpris-analyse">Analyse</a>
@@ -2962,21 +2964,6 @@ def improve_generated_title(lang: str, article_type: str, day: str, summary: str
     return f"Gullmarkedet i dag: oppdatering og nøkkelnivåer {day}"
 
 
-def _strip_weekday_words(text: str) -> str:
-    s = text or ""
-    patterns = [
-        (r"\b(?:mandag|tirsdag|onsdag|torsdag|fredag|lørdag|lordag|søndag|sondag)\b", ""),
-        (r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", ""),
-    ]
-    for pattern, repl in patterns:
-        s = re.sub(pattern, repl, s, flags=re.IGNORECASE)
-    s = re.sub(r"\bi\s+,", "i", s, flags=re.IGNORECASE)
-    s = re.sub(r"\bon\s+,", "on", s, flags=re.IGNORECASE)
-    s = re.sub(r"\s{2,}", " ", s)
-    s = re.sub(r" ?([,.;:!?])", r"\1", s)
-    return s.strip()
-
-
 def normalize_article_for_display(article: Dict[str, Any]) -> Dict[str, Any]:
     a = dict(article)
     lang = str(a.get("lang") or "no")
@@ -2996,7 +2983,6 @@ def normalize_article_for_display(article: Dict[str, Any]) -> Dict[str, Any]:
     else:
         content = content.replace("Full analyse og signaloppdatering:", "Full analysis and signal update:")
 
-    content = _strip_weekday_words(content)
     a["content"] = content
     return a
 
@@ -3127,6 +3113,7 @@ INDEX_BODY_TEMPLATE = """
     </div>
   </section>
 
+  __AFFILIATE_BOX__
   __LATEST_NEWS__
   __FOOTER__
 </div>
@@ -3540,7 +3527,6 @@ TRADE_GUIDE_TEMPLATE = """
       __CHART_HTML__
       <p class="muted" id="macro"></p>
 
-      __AFFILIATE_BOX__
 
       <div class="btnrow">
         <button id="btnReload">Oppdater</button>
@@ -4088,7 +4074,7 @@ def seo_landing(
 
     key_box_html = key_fallback_box(is_en=is_en)
     latest_news_html = render_recent_articles_box(articles_lang)
-    affiliate_html = ""
+    affiliate_html = affiliate_box(lang=lang) if include_affiliate else ""
     guide_link_html = internal_trade_guide_link(lang=lang) if include_trade_link else ""
 
     body = _replace_many(
@@ -4099,7 +4085,7 @@ def seo_landing(
             "__CHART_HTML__": chart_html,
             "__H1__": _escape_html(h1),
             "__INTRO__": _escape_html(intro),
-            "__FOOTER__": footer_links(is_en=is_en),
+            "__FOOTER__": footer_links(is_en=is_en, include_affiliate=True),
             "__MODE__": _escape_html(mode),
             "__NAV_TABS__": nav_tabs(nav_active),
             "__INITIAL_JSON__": json_for_html(initial_payload),
@@ -4177,12 +4163,12 @@ def trade_guide_page(
             "__DATE_LOCALE__": "en-US" if lang == "en" else "nb-NO",
             "__MODE__": mode,
             "__INITIAL_JSON__": json_for_html(initial_payload),
-            "__AFFILIATE_BOX__": "",
+            "__AFFILIATE_BOX__": affiliate_box(lang=lang),
             "__CONTENT_HTML__": trade_guide_content_html(lang=lang),
             "__ANALYSIS_LINK__": "/gold-price-forecast" if lang == "en" else "/gullpris-analyse",
             "__ANALYSIS_BTN__": "Read forecast" if lang == "en" else "Les analyse",
             "__LATEST_NEWS__": render_recent_articles_box("en" if lang == "en" else "no"),
-            "__FOOTER__": footer_links(is_en=(lang == "en")),
+            "__FOOTER__": footer_links(is_en=(lang == "en"), include_affiliate=False),
         },
     )
 
@@ -4208,7 +4194,7 @@ def legal_page(request: Request, path: str, title: str, intro: str, content_html
             "__INTRO__": _escape_html(intro),
             "__CONTENT__": content_html,
             "__KEY_BOX__": key_fallback_box(),
-            "__FOOTER__": footer_links(),
+            "__FOOTER__": footer_links(include_affiliate=True),
         },
     )
     return HTMLResponse(html_shell(request, title=title, description=intro, path=path, body_html=body))
@@ -4508,7 +4494,6 @@ def generate_article_content(
         "- unngå oppstyltet språk\n"
         "- teksten skal føles skrevet av et menneske med markedsforståelse\n"
         "- avslutt med en kort, konkret konklusjon\n"
-        "- ikke bruk ukedagsnavn som mandag, tirsdag, onsdag, monday eller friday i selve artikkelteksten\n"
         "- avslutt alltid med nøyaktig denne CTA-en:\n"
         f"{cta}\n"
     )
@@ -4527,7 +4512,7 @@ def build_daily_news_articles(force_date: Optional[str] = None) -> List[Dict[str
     day = force_date or utc_now().date().isoformat()
     snapshot = get_cached_brief(force_refresh=False)
     headlines = snapshot.get("headlines") or fetch_headlines(limit=FULL_HEADLINES_LIMIT)
-    published_at = f"{day}T12:00:00+00:00" if force_date else iso_now()
+    published_at = iso_now()
 
     out: List[Dict[str, Any]] = []
 
@@ -4678,7 +4663,7 @@ def render_news_index_page(request: Request, lang: str) -> HTMLResponse:
       {auth_login_box(next_url='/news' if lang == 'en' else '/nyheter', is_en=is_en)}
       {key_fallback_box(is_en=is_en)}
       {recent_box}
-      {footer_links(is_en=is_en)}
+      {footer_links(is_en=is_en, include_affiliate=True)}
     </div>
     """
 
@@ -4713,7 +4698,7 @@ def render_news_archive_list(
         </div>
       </section>
 
-      {footer_links(is_en=is_en)}
+      {footer_links(is_en=is_en, include_affiliate=True)}
     </div>
     """
 
@@ -4729,180 +4714,148 @@ def render_news_archive_list(
     )
 
 
-def _auto_link_text_html(text: str) -> str:
-    url_pattern = re.compile(r"(?P<url>https?://[^\s<]+[^\s<.,;:!?)\]\}])")
-    return url_pattern.sub(
-        lambda m: f'<a href="{m.group("url")}" target="_blank" rel="noopener noreferrer">{m.group("url")}</a>',
-        text,
-    )
+
+def _linkify_html_escaped(s: str) -> str:
+    pattern = re.compile(r"(https?://[^\s<]+)")
+    def repl(match: re.Match[str]) -> str:
+        url = match.group(1)
+        clean = url.rstrip(').,!?:;')
+        tail = url[len(clean):]
+        return f'<a href="{clean}" target="_blank" rel="nofollow noopener">{clean}</a>{tail}'
+    return pattern.sub(repl, s)
 
 
-def _inline_markdown_to_html(text: str) -> str:
-    s = _escape_html(text or "")
-    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
-    s = re.sub(r"\*(.+?)\*", r"<em>\1</em>", s)
-    s = _auto_link_text_html(s)
-    return s
+def _format_inline_markup(s: str) -> str:
+    escaped = _escape_html(s)
+    escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
+    escaped = _linkify_html_escaped(escaped)
+    return escaped
 
 
-def _prepare_article_text(text: str) -> str:
-    s = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-    if not s:
-        return ""
-
-    s = re.sub(r"\*\*\s*(#{1,3}\s+)", r"\n\1", s)
-    s = re.sub(r"\s*(#{1,3}\s+)", r"\n\1", s)
-    s = re.sub(r"\s+(?=-\s)", "\n", s)
-    s = re.sub(r"\s+(?=\d+\.\s)", "\n", s)
-    s = re.sub(
-        r"\s+(?=(?:Full analyse og signaloppdatering:|Full analysis and signal update:))",
-        "\n\n",
-        s,
-        flags=re.IGNORECASE,
-    )
-
-    known_headings = [
-        "Tekniske nivåer setter begrensninger",
-        "Rentedrevet og dollarfokus",
-        "Markedsstemningen og risikoaversjon",
-        "Geopolitiske og økonomiske drivere",
-        "Hva betyr dette for gullprisen framover",
-        "Nøkkelobservasjoner",
-        "Oppsummert",
-        "Technical levels still cap the upside",
-        "Rates and dollar remain central",
-        "Market sentiment and risk aversion",
-        "What matters next for gold",
-        "Key takeaways",
-        "Summary",
-    ]
-    for heading in known_headings:
-        s = re.sub(rf"\s*{re.escape(heading)}\s+", f"\n\n### {heading}\n", s)
-
-    s = re.sub(
-        r"(?m)^([A-ZÆØÅ][A-Za-zÆØÅæøå0-9,/()\-– ]{10,58}?)\s+(?=[A-ZÆØÅ][a-zæøå]{2,}\b)",
-        lambda m: f"### {m.group(1).strip()}\n",
-        s,
-    )
-    s = re.sub(r"\n{3,}", "\n\n", s)
-    return s.strip()
+def _split_heading_and_body(line: str) -> Optional[Tuple[str, str]]:
+    compact = re.sub(r"\s+", " ", (line or "").strip())
+    if not compact or len(compact) < 35:
+        return None
+    if compact.startswith(("http://", "https://", "- ")):
+        return None
+    m = re.match(r"^([A-ZÆØÅ][^.!?:]{8,70}?)\s+([A-ZÆØÅ].+)$", compact)
+    if not m:
+        return None
+    heading = m.group(1).strip()
+    body = m.group(2).strip()
+    heading_words = heading.split()
+    if not (2 <= len(heading_words) <= 8):
+        return None
+    lowered = heading.lower()
+    if lowered.startswith(("gullprisen ", "gold price ")):
+        return None
+    return heading, body
 
 
-def _split_long_paragraph(paragraph: str) -> List[str]:
-    paragraph = (paragraph or "").strip()
-    if not paragraph:
-        return []
-    if len(paragraph) <= 420:
-        return [paragraph]
-
-    sentences = re.split(r"(?<=[.!?])\s+(?=[A-ZÆØÅ0-9])", paragraph)
-    if len(sentences) <= 1:
-        return [paragraph]
-
-    chunks: List[str] = []
-    current = ""
-    sentence_count = 0
+def _split_long_paragraph(text: str) -> List[str]:
+    compact = re.sub(r"\s+", " ", text).strip()
+    if len(compact) < 420:
+        return [compact]
+    sentences = re.split(r"(?<=[.!?])\s+", compact)
+    out: List[str] = []
+    buf = ""
     for sentence in sentences:
         sentence = sentence.strip()
         if not sentence:
             continue
-        candidate = (current + " " + sentence).strip() if current else sentence
-        if current and (len(candidate) > 360 or sentence_count >= 2):
-            chunks.append(current.strip())
-            current = sentence
-            sentence_count = 1
+        candidate = f"{buf} {sentence}".strip() if buf else sentence
+        if buf and len(candidate) > 300:
+            out.append(buf.strip())
+            buf = sentence
         else:
-            current = candidate
-            sentence_count += 1
-    if current.strip():
-        chunks.append(current.strip())
-    return chunks or [paragraph]
+            buf = candidate
+    if buf:
+        out.append(buf.strip())
+    return out or [compact]
 
 
 def _article_content_to_html(text: str) -> str:
-    prepared = _prepare_article_text(text)
-    raw_lines = [line.rstrip() for line in prepared.splitlines()]
-    lines: List[str] = []
-    for line in raw_lines:
-        stripped = line.strip()
-        if stripped in {"**", "###", "##", "#"}:
-            continue
-        lines.append(line)
-
+    lines = [re.sub(r"\s+", " ", line).strip() for line in (text or "").splitlines()]
     chunks: List[str] = []
     current: List[str] = []
-    list_items: List[str] = []
+    bullet_items: List[str] = []
 
-    def flush_list() -> None:
-        nonlocal list_items
-        if list_items:
-            chunks.append("<ul>" + "".join(f"<li>{item}</li>" for item in list_items) + "</ul>")
-            list_items = []
+    def flush_bullets() -> None:
+        nonlocal bullet_items
+        if bullet_items:
+            chunks.append("<ul>" + "".join(f"<li>{_format_inline_markup(item)}</li>" for item in bullet_items) + "</ul>")
+            bullet_items = []
 
     def flush_paragraph() -> None:
         nonlocal current
         if current:
-            paragraph = " ".join([x.strip() for x in current if x.strip()])
-            if paragraph.strip():
-                for piece in _split_long_paragraph(paragraph):
-                    chunks.append(f"<p>{_inline_markdown_to_html(piece)}</p>")
+            paragraph = " ".join([x for x in current if x.strip()]).strip()
+            if paragraph:
+                for part in _split_long_paragraph(paragraph):
+                    chunks.append(f"<p>{_format_inline_markup(part)}</p>")
             current = []
 
-    for line in lines:
-        stripped = line.strip()
+    for raw in lines:
+        stripped = raw.strip()
         if not stripped:
+            flush_bullets()
             flush_paragraph()
-            flush_list()
             continue
 
-        heading_text = stripped
-        heading_level = None
         if stripped.startswith("### "):
-            heading_level = "h3"
-            heading_text = stripped[4:].strip()
-        elif stripped.startswith("## "):
-            heading_level = "h2"
-            heading_text = stripped[3:].strip()
-        elif stripped.startswith("# "):
-            heading_level = "h2"
-            heading_text = stripped[2:].strip()
-        elif stripped.endswith(":") and len(stripped) < 90:
-            heading_level = "h3"
-            heading_text = stripped[:-1].strip()
-
-        if heading_level and heading_text:
+            flush_bullets()
             flush_paragraph()
-            flush_list()
-            chunks.append(f"<{heading_level}>{_inline_markdown_to_html(heading_text)}</{heading_level}>")
+            chunks.append(f"<h2>{_format_inline_markup(stripped[4:].strip())}</h2>")
+            continue
+
+        if stripped.startswith("## "):
+            flush_bullets()
+            flush_paragraph()
+            chunks.append(f"<h2>{_format_inline_markup(stripped[3:].strip())}</h2>")
             continue
 
         if stripped.startswith("- "):
             flush_paragraph()
-            list_items.append(_inline_markdown_to_html(stripped[2:].strip()))
+            bullet_items.append(stripped[2:].strip())
             continue
 
-        cta_match = re.search(
-            r"(Full analyse og signaloppdatering:|Full analysis and signal update:)\s*(https?://\S+)",
-            stripped,
-            flags=re.IGNORECASE,
-        )
-        if cta_match:
+        if stripped.lower().startswith("full analyse") or stripped.lower().startswith("full analysis"):
+            flush_bullets()
             flush_paragraph()
-            flush_list()
-            label = cta_match.group(1).strip()
-            url = cta_match.group(2).strip().rstrip(').,')
+            cta_text = stripped.split(":", 1)[0].strip()
+            cta_url = "https://gullbrief.no/premium"
+            if ":" in stripped and "http" in stripped:
+                cta_url = stripped.split(":", 1)[1].strip() or cta_url
             chunks.append(
                 '<div class="article-cta">'
-                f'<a href="{_escape_html(url)}" target="_blank" rel="nofollow">{_escape_html(label)}</a>'
+                f'<p>{_escape_html(cta_text)}</p>'
+                f'<a href="{_escape_html(cta_url)}">Åpne Premium</a>'
                 '</div>'
             )
             continue
 
+        split_heading = _split_heading_and_body(stripped)
+        if split_heading:
+            flush_bullets()
+            flush_paragraph()
+            heading, body = split_heading
+            chunks.append(f"<h2>{_format_inline_markup(heading)}</h2>")
+            for part in _split_long_paragraph(body):
+                chunks.append(f"<p>{_format_inline_markup(part)}</p>")
+            continue
+
+        if len(stripped) <= 72 and not stripped.endswith((".", "!", "?", ":")):
+            flush_bullets()
+            flush_paragraph()
+            chunks.append(f"<h2>{_format_inline_markup(stripped)}</h2>")
+            continue
+
         current.append(stripped)
 
+    flush_bullets()
     flush_paragraph()
-    flush_list()
     return '<div class="article-body">' + "".join(chunks) + "</div>"
+
 
 def render_news_article_page(request: Request, article: Dict[str, Any]) -> HTMLResponse:
     article = normalize_article_for_display(article)
@@ -4935,6 +4888,8 @@ def render_news_article_page(request: Request, article: Dict[str, Any]) -> HTMLR
         </div>
       </section>
 
+      {affiliate_box(lang=lang)}
+
       <section class="grid" style="grid-template-columns:1fr">
         <div class="card">
           <div class="title"><h2>{'Archive' if lang == 'en' else 'Arkiv'}</h2><div class="muted">{'News article' if lang == 'en' else 'Nyhetsartikkel'}</div></div>
@@ -4945,7 +4900,7 @@ def render_news_article_page(request: Request, article: Dict[str, Any]) -> HTMLR
       {auth_login_box(next_url=path, is_en=is_en)}
       {key_fallback_box(is_en=is_en)}
       {recent_box}
-      {footer_links(is_en=is_en)}
+      {footer_links(is_en=is_en, include_affiliate=True)}
     </div>
     """
 
@@ -4973,39 +4928,45 @@ def analysis_redirect():
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
-    seo_text_html = """
-    <section class="wrap" style="padding-top:0">
-      <div class="card">
-        <h2>Om gullpris i dag</h2>
-        <p>
-          Gullpris i dag påvirkes av en kombinasjon av renter, inflasjon, dollarkurs, geopolitisk uro og generell
-          risikovilje i markedene. Når investorer søker tryggere plasseringer, får gull ofte økt oppmerksomhet som
-          en klassisk safe haven. Samtidig kan høyere realrenter og en sterkere amerikansk dollar legge press på
-          gullprisen, siden gull ikke gir løpende rente. Derfor er det nyttig å følge både XAUUSD, sentralbank-signaler,
-          inflasjonstall og bred markedsstemning når man vurderer gullmarkedet.
-        </p>
-        <p>
-          På Gullbrief finner du daglig oppdatert gullpris, kort analyse, relevante nyheter og signalvurdering på ett sted.
-          Målet er å gi et raskt og oversiktlig bilde av hva som driver markedet akkurat nå, uten unødvendig støy.
-          For tradere og investorer som ønsker mer dybde, gir Premium tilgang til lengre analyser, signalhistorikk,
-          arkiv og flere markedssaker. Siden er bygget for både lesbarhet, crawling og søkesynlighet, og oppdateres
-          fortløpende med nye markedssignaler og nyhetsdrevne artikler på norsk og engelsk.
-        </p>
-      </div>
-    </section>
-    """
-    return seo_landing(
-        request,
-        path="/",
-        title="Gullpris i dag | Gold price today | pris, signal og nyheter",
-        desc="Gullpris i dag med pris i USD, daglig analyse, prognose, signal og relevante nyheter om gull og XAUUSD. Følg gullmarkedet løpende.",
-        h1="Gullpris i dag",
-        intro="Dagens pris og signal, med korte drivere og relevante nyheter.",
-        mode="analysis",
-        nav_active="gullpris",
-        seo_text_html=seo_text_html,
-        include_trade_link=True,
+    title = "Gullpris i dag – analyse, prognose og signal for gull (XAUUSD)"
+    desc = "Gullpris i dag med daglig analyse, prognose og signal for gull (XAUUSD). Følg trend, makro og markedssignal."
+
+    initial_payload = get_public_today_payload("analysis")
+
+    sent = request.query_params.get("sent") == "1"
+    sent_email = str(request.query_params.get("email") or "")
+
+    latest_news_html = render_recent_articles_box("no")
+
+    body = _replace_many(
+        INDEX_BODY_TEMPLATE,
+        {
+            "__APP_NAME__": _escape_html(APP_NAME),
+            "__DESC__": _escape_html(desc),
+            "__FOOTER__": footer_links(),
+            "__SITE_HEADER__": site_header("analysis"),
+            "__CHART_HTML__": chart_html,
+            "__NAV_TABS__": nav_tabs("analysis"),
+            "__INITIAL_JSON__": json_for_html(initial_payload),
+            "__LATEST_NEWS__": latest_news_html,
+            "__PREMIUM_BOX__": premium_feature_box(),
+            "__AUTH_BOX__": auth_login_box(next_url="/", sent=sent, email=sent_email),
+            "__KEY_BOX__": key_fallback_box(),
+            "__GUIDE_LINK__": internal_trade_guide_link("no"),
+            "__AFFILIATE_BOX__": affiliate_box("no"),
+            "__CARD_TITLE__": "Gullpris i dag",
+            "__UPDATED_LOADING__": "Oppdaterer…",
+            "__CHANGE_LOADING__": "Endring: ⏳",
+            "__UPDATED_LABEL__": "Oppdatert: ",
+            "__CHANGE_LABEL__": "Endring: ",
+            "__DATE_LOCALE__": "nb-NO",
+            "__HEADLINES_TITLE__": "Relevante nyheter",
+            "__HEADLINES_SUB__": "Direkte kilder",
+            "__PREMIUM_NEWS_HINT__": "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=&quot;/premium&quot;>Åpne Premium</a>",
+        },
     )
+
+    return HTMLResponse(html_shell(request, title=title, description=desc, path="/", body_html=body))
 
 
 @app.get("/premium", response_class=HTMLResponse)
@@ -5057,7 +5018,7 @@ def premium_page(request: Request, session_token: Optional[str] = Cookie(default
         PREMIUM_BODY_TEMPLATE,
         {
             "__APP_NAME__": _escape_html(APP_NAME),
-            "__FOOTER__": footer_links(),
+            "__FOOTER__": footer_links(include_affiliate=True),
             "__SITE_HEADER__": site_header("premium"),
             "__NAV_TABS__": nav_tabs("premium"),
             "__AUTH_BOX__": auth_login_box(next_url="/premium", sent=sent, email=sent_email),
@@ -5098,7 +5059,7 @@ def archive_page(request: Request) -> HTMLResponse:
         ARCHIVE_BODY_INNER,
         {
             "__APP_NAME__": _escape_html(APP_NAME),
-            "__FOOTER__": footer_links(),
+            "__FOOTER__": footer_links(include_affiliate=True),
             "__NAV_TABS__": nav_tabs("premium"),
             "__AUTH_BOX__": auth_login_box(next_url="/archive", sent=sent, email=sent_email),
             "__KEY_BOX__": key_fallback_box(),
@@ -5201,7 +5162,7 @@ def archive_day_page(request: Request, day: str) -> HTMLResponse:
             "__REASON__": _escape_html(reason or "—"),
             "__MACRO__": _escape_html(macro or "—"),
             "__KEY_BOX__": key_fallback_box(),
-            "__FOOTER__": footer_links(),
+            "__FOOTER__": footer_links(include_affiliate=True),
             "__NAV_TABS__": nav_tabs("premium"),
         },
     )
@@ -5251,7 +5212,7 @@ def success_page(request: Request, session_id: Optional[str] = None) -> HTMLResp
             "__STATUS__": _escape_html(status_text),
             "__AUTH_BOX__": auth_login_box(next_url="/archive", email=email),
             "__KEY_BOX__": key_fallback_box(),
-            "__FOOTER__": footer_links(),
+            "__FOOTER__": footer_links(include_affiliate=True),
             "__NAV_TABS__": nav_tabs("premium"),
         },
     )
@@ -5336,7 +5297,39 @@ def page_gullpris_signal(request: Request) -> HTMLResponse:
 
 @app.get("/gullpris", response_class=HTMLResponse)
 def page_gullpris(request: Request) -> HTMLResponse:
-    return RedirectResponse(url="/", status_code=301)
+    seo_text_html = """
+    <section class="wrap" style="padding-top:0">
+      <div class="card">
+        <h2>Om gullpris i dag</h2>
+        <p>
+          Gullpris i dag påvirkes av en kombinasjon av renter, inflasjon, dollarkurs, geopolitisk uro og generell
+          risikovilje i markedene. Når investorer søker tryggere plasseringer, får gull ofte økt oppmerksomhet som
+          en klassisk safe haven. Samtidig kan høyere realrenter og en sterkere amerikansk dollar legge press på
+          gullprisen, siden gull ikke gir løpende rente. Derfor er det nyttig å følge både XAUUSD, sentralbank-signaler,
+          inflasjonstall og bred markedsstemning når man vurderer gullmarkedet.
+        </p>
+        <p>
+          På Gullbrief finner du daglig oppdatert gullpris, kort analyse, relevante nyheter og signalvurdering på ett sted.
+          Målet er å gi et raskt og oversiktlig bilde av hva som driver markedet akkurat nå, uten unødvendig støy.
+          For tradere og investorer som ønsker mer dybde, gir Premium tilgang til lengre analyser, signalhistorikk,
+          arkiv og flere markedssaker. Siden er bygget for både lesbarhet, crawling og søkesynlighet, og oppdateres
+          fortløpende med nye markedssignaler og nyhetsdrevne artikler på norsk og engelsk.
+        </p>
+      </div>
+    </section>
+    """
+    return seo_landing(
+        request,
+        path="/gullpris",
+        title="Gullpris i dag | Gold price today | pris, signal og nyheter",
+        desc="Gullpris i dag med pris i USD, daglig analyse, prognose, signal og relevante nyheter om gull og XAUUSD. Følg gullmarkedet løpende.",
+        h1="Gullpris i dag",
+        intro="Dagens pris og signal, med korte drivere og relevante nyheter.",
+        mode="analysis",
+        nav_active="analysis",
+        seo_text_html=seo_text_html,
+        include_trade_link=True,
+    )
 
 
 @app.get("/handle-gull", response_class=HTMLResponse)
