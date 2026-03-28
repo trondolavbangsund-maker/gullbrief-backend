@@ -2954,6 +2954,21 @@ def improve_generated_title(lang: str, article_type: str, day: str, summary: str
     return f"Gullmarkedet i dag: oppdatering og nøkkelnivåer {day}"
 
 
+def _strip_weekday_words(text: str) -> str:
+    s = text or ""
+    patterns = [
+        (r"\b(?:mandag|tirsdag|onsdag|torsdag|fredag|lørdag|lordag|søndag|sondag)\b", ""),
+        (r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", ""),
+    ]
+    for pattern, repl in patterns:
+        s = re.sub(pattern, repl, s, flags=re.IGNORECASE)
+    s = re.sub(r"\bi\s+,", "i", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bon\s+,", "on", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s{2,}", " ", s)
+    s = re.sub(r" ?([,.;:!?])", r"\1", s)
+    return s.strip()
+
+
 def normalize_article_for_display(article: Dict[str, Any]) -> Dict[str, Any]:
     a = dict(article)
     lang = str(a.get("lang") or "no")
@@ -2973,6 +2988,7 @@ def normalize_article_for_display(article: Dict[str, Any]) -> Dict[str, Any]:
     else:
         content = content.replace("Full analyse og signaloppdatering:", "Full analysis and signal update:")
 
+    content = _strip_weekday_words(content)
     a["content"] = content
     return a
 
@@ -4484,6 +4500,7 @@ def generate_article_content(
         "- unngå oppstyltet språk\n"
         "- teksten skal føles skrevet av et menneske med markedsforståelse\n"
         "- avslutt med en kort, konkret konklusjon\n"
+        "- ikke bruk ukedagsnavn som mandag, tirsdag, onsdag, monday eller friday i selve artikkelteksten\n"
         "- avslutt alltid med nøyaktig denne CTA-en:\n"
         f"{cta}\n"
     )
@@ -4502,7 +4519,7 @@ def build_daily_news_articles(force_date: Optional[str] = None) -> List[Dict[str
     day = force_date or utc_now().date().isoformat()
     snapshot = get_cached_brief(force_refresh=False)
     headlines = snapshot.get("headlines") or fetch_headlines(limit=FULL_HEADLINES_LIMIT)
-    published_at = iso_now()
+    published_at = f"{day}T12:00:00+00:00" if force_date else iso_now()
 
     out: List[Dict[str, Any]] = []
 
@@ -4704,35 +4721,84 @@ def render_news_archive_list(
     )
 
 
+def _auto_link_text_html(text: str) -> str:
+    url_pattern = re.compile(r"(https?://[^\s<]+)")
+    return url_pattern.sub(lambda m: f'<a href="{m.group(1)}" target="_blank" rel="noopener noreferrer">{m.group(1)}</a>', text)
+
+
+def _inline_markdown_to_html(text: str) -> str:
+    s = _escape_html(text or "")
+    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+    s = re.sub(r"\*(.+?)\*", r"<em>\1</em>", s)
+    s = _auto_link_text_html(s)
+    return s
+
+
 def _article_content_to_html(text: str) -> str:
-    lines = [line.rstrip() for line in (text or "").splitlines()]
+    raw_lines = [line.rstrip() for line in (text or "").splitlines()]
+    lines: List[str] = []
+    for line in raw_lines:
+        stripped = line.strip()
+        if stripped in {"**", "###", "##", "#"}:
+            continue
+        lines.append(line)
+
     chunks: List[str] = []
     current: List[str] = []
+    list_items: List[str] = []
+
+    def flush_list() -> None:
+        nonlocal list_items
+        if list_items:
+            chunks.append("<ul>" + "".join(f"<li>{item}</li>" for item in list_items) + "</ul>")
+            list_items = []
 
     def flush_paragraph() -> None:
         nonlocal current
         if current:
-            paragraph = " ".join([_escape_html(x) for x in current if x.strip()])
+            paragraph = " ".join([x.strip() for x in current if x.strip()])
             if paragraph.strip():
-                chunks.append(f"<p>{paragraph}</p>")
+                chunks.append(f"<p>{_inline_markdown_to_html(paragraph)}</p>")
             current = []
 
     for line in lines:
         stripped = line.strip()
         if not stripped:
             flush_paragraph()
+            flush_list()
             continue
-        if len(stripped) < 90 and not stripped.endswith(".") and not stripped.startswith("-"):
+
+        heading_text = stripped
+        heading_level = None
+        if stripped.startswith("### "):
+            heading_level = "h3"
+            heading_text = stripped[4:].strip()
+        elif stripped.startswith("## "):
+            heading_level = "h2"
+            heading_text = stripped[3:].strip()
+        elif stripped.startswith("# "):
+            heading_level = "h2"
+            heading_text = stripped[2:].strip()
+        elif len(stripped) < 90 and not stripped.endswith(".") and not stripped.startswith("-"):
+            heading_level = "h2"
+            heading_text = stripped
+
+        if heading_level and heading_text:
             flush_paragraph()
-            chunks.append(f"<h2>{_escape_html(stripped)}</h2>")
+            flush_list()
+            chunks.append(f"<{heading_level}>{_inline_markdown_to_html(heading_text)}</{heading_level}>")
             continue
+
         if stripped.startswith("- "):
             flush_paragraph()
-            chunks.append(f"<p>{_escape_html(stripped)}</p>")
+            list_items.append(_inline_markdown_to_html(stripped[2:].strip()))
             continue
+
+        flush_list()
         current.append(stripped)
 
     flush_paragraph()
+    flush_list()
     return '<div class="article-body">' + "".join(chunks) + "</div>"
 
 
@@ -4805,45 +4871,39 @@ def analysis_redirect():
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
-    title = "Gullpris i dag – analyse, prognose og signal for gull (XAUUSD)"
-    desc = "Gullpris i dag med daglig analyse, prognose og signal for gull (XAUUSD). Følg trend, makro og markedssignal."
-
-    initial_payload = get_public_today_payload("analysis")
-
-    sent = request.query_params.get("sent") == "1"
-    sent_email = str(request.query_params.get("email") or "")
-
-    latest_news_html = render_recent_articles_box("no")
-
-    body = _replace_many(
-        INDEX_BODY_TEMPLATE,
-        {
-            "__APP_NAME__": _escape_html(APP_NAME),
-            "__DESC__": _escape_html(desc),
-            "__FOOTER__": footer_links(),
-            "__SITE_HEADER__": site_header("analysis"),
-            "__CHART_HTML__": chart_html,
-            "__NAV_TABS__": nav_tabs("analysis"),
-            "__INITIAL_JSON__": json_for_html(initial_payload),
-            "__LATEST_NEWS__": latest_news_html,
-            "__PREMIUM_BOX__": premium_feature_box(),
-            "__AUTH_BOX__": auth_login_box(next_url="/", sent=sent, email=sent_email),
-            "__KEY_BOX__": key_fallback_box(),
-            "__GUIDE_LINK__": internal_trade_guide_link("no"),
-            "__AFFILIATE_BOX__": affiliate_box("no"),
-            "__CARD_TITLE__": "Gullpris i dag",
-            "__UPDATED_LOADING__": "Oppdaterer…",
-            "__CHANGE_LOADING__": "Endring: ⏳",
-            "__UPDATED_LABEL__": "Oppdatert: ",
-            "__CHANGE_LABEL__": "Endring: ",
-            "__DATE_LOCALE__": "nb-NO",
-            "__HEADLINES_TITLE__": "Relevante nyheter",
-            "__HEADLINES_SUB__": "Direkte kilder",
-            "__PREMIUM_NEWS_HINT__": "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=&quot;/premium&quot;>Åpne Premium</a>",
-        },
+    seo_text_html = """
+    <section class="wrap" style="padding-top:0">
+      <div class="card">
+        <h2>Om gullpris i dag</h2>
+        <p>
+          Gullpris i dag påvirkes av en kombinasjon av renter, inflasjon, dollarkurs, geopolitisk uro og generell
+          risikovilje i markedene. Når investorer søker tryggere plasseringer, får gull ofte økt oppmerksomhet som
+          en klassisk safe haven. Samtidig kan høyere realrenter og en sterkere amerikansk dollar legge press på
+          gullprisen, siden gull ikke gir løpende rente. Derfor er det nyttig å følge både XAUUSD, sentralbank-signaler,
+          inflasjonstall og bred markedsstemning når man vurderer gullmarkedet.
+        </p>
+        <p>
+          På Gullbrief finner du daglig oppdatert gullpris, kort analyse, relevante nyheter og signalvurdering på ett sted.
+          Målet er å gi et raskt og oversiktlig bilde av hva som driver markedet akkurat nå, uten unødvendig støy.
+          For tradere og investorer som ønsker mer dybde, gir Premium tilgang til lengre analyser, signalhistorikk,
+          arkiv og flere markedssaker. Siden er bygget for både lesbarhet, crawling og søkesynlighet, og oppdateres
+          fortløpende med nye markedssignaler og nyhetsdrevne artikler på norsk og engelsk.
+        </p>
+      </div>
+    </section>
+    """
+    return seo_landing(
+        request,
+        path="/",
+        title="Gullpris i dag | Gold price today | pris, signal og nyheter",
+        desc="Gullpris i dag med pris i USD, daglig analyse, prognose, signal og relevante nyheter om gull og XAUUSD. Følg gullmarkedet løpende.",
+        h1="Gullpris i dag",
+        intro="Dagens pris og signal, med korte drivere og relevante nyheter.",
+        mode="analysis",
+        nav_active="gullpris",
+        seo_text_html=seo_text_html,
+        include_trade_link=True,
     )
-
-    return HTMLResponse(html_shell(request, title=title, description=desc, path="/", body_html=body))
 
 
 @app.get("/premium", response_class=HTMLResponse)
@@ -5174,39 +5234,7 @@ def page_gullpris_signal(request: Request) -> HTMLResponse:
 
 @app.get("/gullpris", response_class=HTMLResponse)
 def page_gullpris(request: Request) -> HTMLResponse:
-    seo_text_html = """
-    <section class="wrap" style="padding-top:0">
-      <div class="card">
-        <h2>Om gullpris i dag</h2>
-        <p>
-          Gullpris i dag påvirkes av en kombinasjon av renter, inflasjon, dollarkurs, geopolitisk uro og generell
-          risikovilje i markedene. Når investorer søker tryggere plasseringer, får gull ofte økt oppmerksomhet som
-          en klassisk safe haven. Samtidig kan høyere realrenter og en sterkere amerikansk dollar legge press på
-          gullprisen, siden gull ikke gir løpende rente. Derfor er det nyttig å følge både XAUUSD, sentralbank-signaler,
-          inflasjonstall og bred markedsstemning når man vurderer gullmarkedet.
-        </p>
-        <p>
-          På Gullbrief finner du daglig oppdatert gullpris, kort analyse, relevante nyheter og signalvurdering på ett sted.
-          Målet er å gi et raskt og oversiktlig bilde av hva som driver markedet akkurat nå, uten unødvendig støy.
-          For tradere og investorer som ønsker mer dybde, gir Premium tilgang til lengre analyser, signalhistorikk,
-          arkiv og flere markedssaker. Siden er bygget for både lesbarhet, crawling og søkesynlighet, og oppdateres
-          fortløpende med nye markedssignaler og nyhetsdrevne artikler på norsk og engelsk.
-        </p>
-      </div>
-    </section>
-    """
-    return seo_landing(
-        request,
-        path="/gullpris",
-        title="Gullpris i dag | Gold price today | pris, signal og nyheter",
-        desc="Gullpris i dag med pris i USD, daglig analyse, prognose, signal og relevante nyheter om gull og XAUUSD. Følg gullmarkedet løpende.",
-        h1="Gullpris i dag",
-        intro="Dagens pris og signal, med korte drivere og relevante nyheter.",
-        mode="analysis",
-        nav_active="analysis",
-        seo_text_html=seo_text_html,
-        include_trade_link=True,
-    )
+    return RedirectResponse(url="/", status_code=301)
 
 
 @app.get("/handle-gull", response_class=HTMLResponse)
