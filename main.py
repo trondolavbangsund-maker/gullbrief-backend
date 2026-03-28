@@ -2269,7 +2269,7 @@ def nav_tabs(active: str) -> str:
         ]
     else:
         tabs = [
-            ("/gullpris", "gullpris", "Gullpris"),
+            ("/", "gullpris", "Gullpris"),
             ("/gullpris-analyse", "analysis", "Analyse"),
             ("/gullpris-prognose", "forecast", "Prognose"),
             ("/xauusd", "xauusd", "XAUUSD"),
@@ -2689,7 +2689,7 @@ COMMON_STYLE = """
   .mini-chart svg{width:100%;height:68px;display:block}
   .mini-chart .chart-line{fill:none;stroke:var(--gold);stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
   .mini-chart .chart-fill{fill:rgba(212,175,55,.10)}
-  .mini-chart .chart-caption{margin-top:12px;padding-top:4px;font-size:12px;color:var(--muted)}
+  .mini-chart .chart-caption{display:block;margin:8px 0 18px;font-size:12px;color:var(--muted)}
 </style>
 """
 
@@ -3063,7 +3063,7 @@ INDEX_BODY_TEMPLATE = """
   __SITE_HEADER__
 
   <section class="hero">
-    <h1>Gullpris i dag 📈 analyse, prognose og signal for gull (XAUUSD)</h1>
+    <h1>Gullpris i dag</h1>
     <p>__DESC__</p>
   </section>
 
@@ -4709,27 +4709,12 @@ def _article_content_to_html(text: str) -> str:
     chunks: List[str] = []
     current: List[str] = []
 
-    def _linkify_html(s: str) -> str:
-        pattern = re.compile(r"(https?://[^\s<]+)")
-
-        def repl(match: re.Match[str]) -> str:
-            url = match.group(1).rstrip('.,);:!?')
-            trailing = match.group(1)[len(url):]
-            return f'<a href="{url}" target="_blank" rel="noopener noreferrer">{url}</a>{trailing}'
-
-        return pattern.sub(repl, s)
-
-    def _format_inline(s: str) -> str:
-        escaped = _escape_html(s)
-        escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
-        return _linkify_html(escaped)
-
     def flush_paragraph() -> None:
         nonlocal current
         if current:
-            paragraph = " ".join([x for x in current if x.strip()])
+            paragraph = " ".join([_escape_html(x) for x in current if x.strip()])
             if paragraph.strip():
-                chunks.append(f"<p>{_format_inline(paragraph)}</p>")
+                chunks.append(f"<p>{paragraph}</p>")
             current = []
 
     for line in lines:
@@ -4737,36 +4722,14 @@ def _article_content_to_html(text: str) -> str:
         if not stripped:
             flush_paragraph()
             continue
-
-        if stripped.startswith("###"):
-            flush_paragraph()
-            heading = stripped.lstrip('#').strip()
-            if heading:
-                chunks.append(f"<h2>{_format_inline(heading)}</h2>")
-            continue
-
-        if stripped.startswith("##"):
-            flush_paragraph()
-            heading = stripped.lstrip('#').strip()
-            if heading:
-                chunks.append(f"<h2>{_format_inline(heading)}</h2>")
-            continue
-
         if len(stripped) < 90 and not stripped.endswith(".") and not stripped.startswith("-"):
             flush_paragraph()
-            chunks.append(f"<h2>{_format_inline(stripped)}</h2>")
+            chunks.append(f"<h2>{_escape_html(stripped)}</h2>")
             continue
-
         if stripped.startswith("- "):
             flush_paragraph()
-            chunks.append(f"<p>{_format_inline(stripped)}</p>")
+            chunks.append(f"<p>{_escape_html(stripped)}</p>")
             continue
-
-        if stripped.startswith("http://") or stripped.startswith("https://"):
-            flush_paragraph()
-            chunks.append(f"<p>{_format_inline(stripped)}</p>")
-            continue
-
         current.append(stripped)
 
     flush_paragraph()
@@ -4842,8 +4805,8 @@ def analysis_redirect():
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
-    title = "Gullpris i dag – analyse, prognose og signal for gull (XAUUSD)"
-    desc = "Gullpris i dag med daglig analyse, prognose og signal for gull (XAUUSD). Følg trend, makro og markedssignal."
+    title = "Gullpris i dag | pris, signal og nyheter for gull (XAUUSD)"
+    desc = "Dagens gullpris i USD med kort status, signal og relevante nyheter om gull og XAUUSD."
 
     initial_payload = get_public_today_payload("analysis")
 
@@ -4858,9 +4821,9 @@ def index(request: Request) -> HTMLResponse:
             "__APP_NAME__": _escape_html(APP_NAME),
             "__DESC__": _escape_html(desc),
             "__FOOTER__": footer_links(),
-            "__SITE_HEADER__": site_header("analysis"),
+            "__SITE_HEADER__": site_header("gullpris"),
             "__CHART_HTML__": chart_html,
-            "__NAV_TABS__": nav_tabs("analysis"),
+            "__NAV_TABS__": nav_tabs("gullpris"),
             "__INITIAL_JSON__": json_for_html(initial_payload),
             "__LATEST_NEWS__": latest_news_html,
             "__PREMIUM_BOX__": premium_feature_box(),
@@ -5209,41 +5172,9 @@ def page_gullpris_signal(request: Request) -> HTMLResponse:
     )
 
 
-@app.get("/gullpris", response_class=HTMLResponse)
-def page_gullpris(request: Request) -> HTMLResponse:
-    seo_text_html = """
-    <section class="wrap" style="padding-top:0">
-      <div class="card">
-        <h2>Om gullpris i dag</h2>
-        <p>
-          Gullpris i dag påvirkes av en kombinasjon av renter, inflasjon, dollarkurs, geopolitisk uro og generell
-          risikovilje i markedene. Når investorer søker tryggere plasseringer, får gull ofte økt oppmerksomhet som
-          en klassisk safe haven. Samtidig kan høyere realrenter og en sterkere amerikansk dollar legge press på
-          gullprisen, siden gull ikke gir løpende rente. Derfor er det nyttig å følge både XAUUSD, sentralbank-signaler,
-          inflasjonstall og bred markedsstemning når man vurderer gullmarkedet.
-        </p>
-        <p>
-          På Gullbrief finner du daglig oppdatert gullpris, kort analyse, relevante nyheter og signalvurdering på ett sted.
-          Målet er å gi et raskt og oversiktlig bilde av hva som driver markedet akkurat nå, uten unødvendig støy.
-          For tradere og investorer som ønsker mer dybde, gir Premium tilgang til lengre analyser, signalhistorikk,
-          arkiv og flere markedssaker. Siden er bygget for både lesbarhet, crawling og søkesynlighet, og oppdateres
-          fortløpende med nye markedssignaler og nyhetsdrevne artikler på norsk og engelsk.
-        </p>
-      </div>
-    </section>
-    """
-    return seo_landing(
-        request,
-        path="/gullpris",
-        title="Gullpris i dag | Gold price today | pris, signal og nyheter",
-        desc="Gullpris i dag med pris i USD, daglig analyse, prognose, signal og relevante nyheter om gull og XAUUSD. Følg gullmarkedet løpende.",
-        h1="Gullpris i dag",
-        intro="Dagens pris og signal, med korte drivere og relevante nyheter.",
-        mode="analysis",
-        nav_active="analysis",
-        seo_text_html=seo_text_html,
-        include_trade_link=True,
-    )
+@app.get("/gullpris")
+def page_gullpris() -> RedirectResponse:
+    return RedirectResponse(url="/", status_code=301)
 
 
 @app.get("/handle-gull", response_class=HTMLResponse)
