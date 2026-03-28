@@ -2031,7 +2031,7 @@ def map_to_public_today(data: Dict[str, Any], mode: str = "analysis") -> Dict[st
     elif mode == "xauusd":
         summary = xauusd_text or analysis_text
     elif mode == "xauusd_en":
-        summary = forecast_en or analysis_en or "Gold remains highly sensitive to the US dollar, Treasury yields and broader risk sentiment."
+        summary = forecast_en or "Gold remains highly sensitive to the US dollar, Treasury yields and broader risk sentiment."
     elif mode == "signal_en":
         if signal_state == "BULLISH":
             base = "Today's signal is BULLISH. Gold remains in a constructive short-term technical structure."
@@ -2805,7 +2805,7 @@ def footer_links(is_en: bool = False) -> str:
 chart_html = """
       <div class="mini-chart">
         <svg id="priceChart" viewBox="0 0 400 68" preserveAspectRatio="none" aria-label="Price chart"></svg>
-        <div class="chart-caption">7 dager / 7 days</div>
+        <div class="chart-caption">__CHART_CAPTION__</div>
       </div>
 """
 
@@ -2846,8 +2846,8 @@ def premium_feature_box_en() -> str:
         <div class="premiummini"><b>Archive + email alerts</b><br/>Follow signal changes and get the daily report delivered directly.</div>
       </div>
       <div class="premiumcta">
-        <a class="goldbtn" href="/premium">Open Premium</a>
-        <a class="ghostbtn" href="/archive">Open archive</a>
+        <a class="goldbtn" href="/premium-en">Open Premium</a>
+        <a class="ghostbtn" href="/archive-en">Open archive</a>
       </div>
     </div>
     """
@@ -3085,7 +3085,7 @@ INDEX_BODY_TEMPLATE = """
       <div class="title"><h2>__CARD_TITLE__</h2><div class="muted" id="updatedAt">__UPDATED_LOADING__</div></div>
       <div class="big" id="price">$–</div>
       <div class="sub" id="change">__CHANGE_LOADING__</div>
-      <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
+      <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">__SIGNAL_LABEL__: –</span></div>
       <p class="muted" style="margin-top:12px" id="reason">–</p>
       __CHART_HTML__
 
@@ -3127,6 +3127,12 @@ INDEX_BODY_TEMPLATE = """
   const pillClass = (s) => (s||"").toLowerCase().includes("bull") ? "bullish" : ((s||"").toLowerCase().includes("bear") ? "bearish" : "neutral");
   const UPDATED_LABEL = "__UPDATED_LABEL__";
   const CHANGE_LABEL = "__CHANGE_LABEL__";
+  const SIGNAL_LABEL = "__SIGNAL_LABEL__";
+  const STATUS_LOADING = "__STATUS_LOADING__";
+  const STATUS_SNAPSHOT = "__STATUS_SNAPSHOT__";
+  const STATUS_LOADING_SNAPSHOT = "__STATUS_LOADING_SNAPSHOT__";
+  const STATUS_OK = "__STATUS_OK__";
+  const STATUS_ERROR = "__STATUS_ERROR__";
   const PREMIUM_NEWS_HINT = "__PREMIUM_NEWS_HINT__";
   const formatUpdatedAt = (value) => {
     if(!value) return "–";
@@ -3220,7 +3226,7 @@ INDEX_BODY_TEMPLATE = """
     $("price").textContent = fmtPrice(data?.gold?.price_usd);
     $("change").textContent = CHANGE_LABEL + fmtPct(data?.gold?.change_pct);
     const state = data?.signal?.state || "neutral";
-    $("signalText").textContent = "Signal: " + state;
+    $("signalText").textContent = SIGNAL_LABEL + ": " + state;
     $("signalPill").className = "pill " + pillClass(state);
     $("reason").textContent = data?.signal?.reason_short || "";
     $("macro").textContent = data?.macro?.summary_short || "";
@@ -3233,7 +3239,7 @@ INDEX_BODY_TEMPLATE = """
       const data = JSON.parse(raw);
       if(data && data.gold){
         renderToday(data);
-        $("status").textContent = "Status: Snapshot lastet";
+        $("status").textContent = STATUS_SNAPSHOT;
         return true;
       }
     }catch(e){}
@@ -3242,14 +3248,14 @@ INDEX_BODY_TEMPLATE = """
 
   async function loadToday(){
     try{
-      $("status").textContent = "Status: Laster snapshot…";
+      $("status").textContent = STATUS_LOADING_SNAPSHOT;
       const res = await fetch("/api/public/today?mode=" + encodeURIComponent(MODE), {cache:"no-store"});
       const data = await res.json();
       if(!res.ok) throw new Error(data?.message || ("HTTP " + res.status));
       renderToday(data);
-      $("status").textContent = "Status: OK";
+      $("status").textContent = STATUS_OK;
     }catch(e){
-      $("status").textContent = "Status: Feil: " + e;
+      $("status").textContent = STATUS_ERROR + e;
     }
   }
 
@@ -3356,7 +3362,7 @@ SEO_LANDING_TEMPLATE = """
       <div class="title"><h2>__CARD_TITLE__</h2><div class="muted" id="updatedAt">__UPDATED_LOADING__</div></div>
       <div class="big" id="price">$–</div>
       <div class="sub" id="change">__CHANGE_LOADING__</div>
-      <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
+      <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">__SIGNAL_LABEL__: –</span></div>
       <p class="muted" style="margin-top:12px" id="reason">–</p>
       __CHART_HTML__
       <p class="muted" id="macro"></p>
@@ -3368,11 +3374,11 @@ SEO_LANDING_TEMPLATE = """
       __KEY_BOX__
 
       <div class="btnrow">
-        <button id="btnReload">Oppdater</button>
-        <button onclick="location.href='/premium'">Premium</button>
-        <button onclick="location.href='/archive'">Arkiv</button>
+        <button id="btnReload">__BTN_RELOAD__</button>
+        <button onclick="location.href='__PREMIUM_HREF__'">__BTN_PREMIUM__</button>
+        <button onclick="location.href='__ARCHIVE_HREF__'">__BTN_ARCHIVE__</button>
       </div>
-      <div class="muted" id="status" style="margin-top:8px">Status: …</div>
+      <div class="muted" id="status" style="margin-top:8px">__STATUS_LOADING__</div>
     </div>
 
     <div class="card">
@@ -3396,6 +3402,12 @@ SEO_LANDING_TEMPLATE = """
   const pillClass = (s) => (s||"").toLowerCase().includes("bull") ? "bullish" : ((s||"").toLowerCase().includes("bear") ? "bearish" : "neutral");
   const UPDATED_LABEL = "__UPDATED_LABEL__";
   const CHANGE_LABEL = "__CHANGE_LABEL__";
+  const SIGNAL_LABEL = "__SIGNAL_LABEL__";
+  const STATUS_LOADING = "__STATUS_LOADING__";
+  const STATUS_SNAPSHOT = "__STATUS_SNAPSHOT__";
+  const STATUS_LOADING_SNAPSHOT = "__STATUS_LOADING_SNAPSHOT__";
+  const STATUS_OK = "__STATUS_OK__";
+  const STATUS_ERROR = "__STATUS_ERROR__";
   const PREMIUM_NEWS_HINT = "__PREMIUM_NEWS_HINT__";
   const formatUpdatedAt = (value) => {
     if(!value) return "–";
@@ -3463,7 +3475,7 @@ SEO_LANDING_TEMPLATE = """
     $("price").textContent = fmtPrice(data?.gold?.price_usd);
     $("change").textContent = CHANGE_LABEL + fmtPct(data?.gold?.change_pct);
     const state = data?.signal?.state || "neutral";
-    $("signalText").textContent = "Signal: " + state;
+    $("signalText").textContent = SIGNAL_LABEL + ": " + state;
     $("signalPill").className = "pill " + pillClass(state);
     $("reason").textContent = data?.signal?.reason_short || "";
     $("macro").textContent = data?.macro?.summary_short || "";
@@ -3476,7 +3488,7 @@ SEO_LANDING_TEMPLATE = """
       const data = JSON.parse(raw);
       if(data && data.gold){
         renderToday(data);
-        $("status").textContent = "Status: Snapshot lastet";
+        $("status").textContent = STATUS_SNAPSHOT;
         return true;
       }
     }catch(e){}
@@ -3485,14 +3497,14 @@ SEO_LANDING_TEMPLATE = """
 
   async function loadToday(){
     try{
-      $("status").textContent = "Status: Laster snapshot…";
+      $("status").textContent = STATUS_LOADING_SNAPSHOT;
       const res = await fetch("/api/public/today?mode=" + encodeURIComponent(MODE), {cache:"no-store"});
       const data = await res.json();
       if(!res.ok) throw new Error(data?.message || ("HTTP " + res.status));
       renderToday(data);
-      $("status").textContent = "Status: OK";
+      $("status").textContent = STATUS_OK;
     }catch(e){
-      $("status").textContent = "Status: Feil: " + e;
+      $("status").textContent = STATUS_ERROR + e;
     }
   }
 
@@ -3522,7 +3534,7 @@ TRADE_GUIDE_TEMPLATE = """
       <div class="title"><h2>__CARD_TITLE__</h2><div class="muted" id="updatedAt">__UPDATED_LOADING__</div></div>
       <div class="big" id="price">$–</div>
       <div class="sub" id="change">__CHANGE_LOADING__</div>
-      <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">Signal: –</span></div>
+      <div class="pill neutral" id="signalPill"><span class="dot"></span><span id="signalText">__SIGNAL_LABEL__: –</span></div>
       <p class="muted" style="margin-top:12px" id="reason">–</p>
       __CHART_HTML__
       <p class="muted" id="macro"></p>
@@ -3530,11 +3542,11 @@ TRADE_GUIDE_TEMPLATE = """
       __AFFILIATE_BOX__
 
       <div class="btnrow">
-        <button id="btnReload">Oppdater</button>
+        <button id="btnReload">__BTN_RELOAD__</button>
         <button onclick="location.href='__ANALYSIS_LINK__'">__ANALYSIS_BTN__</button>
-        <button onclick="location.href='/premium'">Premium</button>
+        <button onclick="location.href='__PREMIUM_HREF__'">__BTN_PREMIUM__</button>
       </div>
-      <div class="muted" id="status" style="margin-top:8px">Status: …</div>
+      <div class="muted" id="status" style="margin-top:8px">__STATUS_LOADING__</div>
     </div>
 
     <div class="card content-block">
@@ -3555,6 +3567,12 @@ TRADE_GUIDE_TEMPLATE = """
   const pillClass = (s) => (s||"").toLowerCase().includes("bull") ? "bullish" : ((s||"").toLowerCase().includes("bear") ? "bearish" : "neutral");
   const UPDATED_LABEL = "__UPDATED_LABEL__";
   const CHANGE_LABEL = "__CHANGE_LABEL__";
+  const SIGNAL_LABEL = "__SIGNAL_LABEL__";
+  const STATUS_LOADING = "__STATUS_LOADING__";
+  const STATUS_SNAPSHOT = "__STATUS_SNAPSHOT__";
+  const STATUS_LOADING_SNAPSHOT = "__STATUS_LOADING_SNAPSHOT__";
+  const STATUS_OK = "__STATUS_OK__";
+  const STATUS_ERROR = "__STATUS_ERROR__";
   const formatUpdatedAt = (value) => {
     if(!value) return "–";
     try{
@@ -4057,7 +4075,7 @@ def seo_landing(
     initial_payload = get_public_today_payload(mode)
 
     is_en = lang == "en"
-    articles_lang = "en" if mode == "forecast_en" else "no"
+    articles_lang = "en" if is_en else "no"
 
     if is_en and isinstance(initial_payload.get("signal"), dict):
         initial_payload["signal"]["reason_short"] = translate_signal_reason_to_english(
@@ -4102,12 +4120,24 @@ def seo_landing(
             "__CHANGE_LOADING__": "Change:" if is_en else "Endring:",
             "__UPDATED_LABEL__": "Updated:" if is_en else "Oppdatert:",
             "__CHANGE_LABEL__": "Change:" if is_en else "Endring:",
+            "__SIGNAL_LABEL__": "Signal",
+            "__BTN_RELOAD__": "Refresh" if is_en else "Oppdater",
+            "__BTN_PREMIUM__": "Premium",
+            "__BTN_ARCHIVE__": "Archive" if is_en else "Arkiv",
+            "__PREMIUM_HREF__": "/premium-en" if is_en else "/premium",
+            "__ARCHIVE_HREF__": "/archive-en" if is_en else "/archive",
+            "__STATUS_LOADING__": "Status: Loading…" if is_en else "Status: …",
+            "__STATUS_SNAPSHOT__": "Status: Snapshot loaded" if is_en else "Status: Snapshot lastet",
+            "__STATUS_LOADING_SNAPSHOT__": "Status: Loading snapshot…" if is_en else "Status: Laster snapshot…",
+            "__STATUS_OK__": "Status: OK",
+            "__STATUS_ERROR__": "Status: Error: " if is_en else "Status: Feil: ",
+            "__CHART_CAPTION__": "7 days" if is_en else "7 dager",
             "__DATE_LOCALE__": "en-US" if is_en else "nb-NO",
             "__HEADLINES_TITLE__": "Relevant headlines" if is_en else "Relevante nyheter",
             "__HEADLINES_SUB__": "Direct sources" if is_en else "Direkte kilder",
             "__PREMIUM_NEWS_HINT__": (
                 "Showing __FREE_LIMIT__ recent articles. Premium gives access to more market headlines, the longer report and the archive. "
-                "<a href=&quot;/premium&quot;>Open Premium</a>"
+                "<a href=&quot;/premium-en&quot;>Open Premium</a>"
                 if is_en
                 else
                 "Viser __FREE_LIMIT__ nylige artikler. Premium gir tilgang til flere markedssaker, lengre rapport og arkiv. <a href=&quot;/premium&quot;>Åpne Premium</a>"
@@ -4161,6 +4191,16 @@ def trade_guide_page(
             "__CHANGE_LOADING__": "Change:" if lang == "en" else "Endring:",
             "__UPDATED_LABEL__": "Updated:" if lang == "en" else "Oppdatert:",
             "__CHANGE_LABEL__": "Change:" if lang == "en" else "Endring:",
+            "__SIGNAL_LABEL__": "Signal",
+            "__BTN_RELOAD__": "Refresh" if lang == "en" else "Oppdater",
+            "__BTN_PREMIUM__": "Premium",
+            "__PREMIUM_HREF__": "/premium-en" if lang == "en" else "/premium",
+            "__STATUS_LOADING__": "Status: Loading…" if lang == "en" else "Status: …",
+            "__STATUS_SNAPSHOT__": "Status: Snapshot loaded" if lang == "en" else "Status: Snapshot lastet",
+            "__STATUS_LOADING_SNAPSHOT__": "Status: Loading snapshot…" if lang == "en" else "Status: Laster snapshot…",
+            "__STATUS_OK__": "Status: OK",
+            "__STATUS_ERROR__": "Status: Error: " if lang == "en" else "Status: Feil: ",
+            "__CHART_CAPTION__": "7 days" if lang == "en" else "7 dager",
             "__DATE_LOCALE__": "en-US" if lang == "en" else "nb-NO",
             "__MODE__": mode,
             "__INITIAL_JSON__": json_for_html(initial_payload),
@@ -4849,6 +4889,8 @@ def index(request: Request) -> HTMLResponse:
             "__CHANGE_LOADING__": "Endring: ⏳",
             "__UPDATED_LABEL__": "Oppdatert: ",
             "__CHANGE_LABEL__": "Endring: ",
+            "__SIGNAL_LABEL__": "Signal",
+            "__CHART_CAPTION__": "7 dager",
             "__DATE_LOCALE__": "nb-NO",
             "__HEADLINES_TITLE__": "Relevante nyheter",
             "__HEADLINES_SUB__": "Direkte kilder",
@@ -5111,6 +5153,14 @@ def success_page(request: Request, session_id: Optional[str] = None) -> HTMLResp
 
 @app.get("/gullpris-prognose", response_class=HTMLResponse)
 def page_gullpris_prognose(request: Request) -> HTMLResponse:
+    seo_text_html = """
+    <section class="wrap" style="padding-top:0">
+      <div class="card">
+        <h2>Gullpris prognose for de neste 24–72 timene</h2>
+        <p>Denne siden er laget for søk som gullpris prognose, gold price forecast og kortsiktig XAUUSD outlook. Her samles dagens signal, viktige nivåer og de viktigste makrodriverne i ett format.</p>
+      </div>
+    </section>
+    """
     return seo_landing(
         request,
         path="/gullpris-prognose",
@@ -5120,12 +5170,21 @@ def page_gullpris_prognose(request: Request) -> HTMLResponse:
         intro="Fremoverskuende scenario for de neste 24–72 timene. Gold price forecast og XAUUSD outlook.",
         mode="forecast",
         nav_active="forecast",
+        seo_text_html=seo_text_html,
         include_trade_link=True,
     )
 
 
 @app.get("/gold-price-forecast", response_class=HTMLResponse)
 def page_gold_price_forecast(request: Request) -> HTMLResponse:
+    seo_text_html = """
+    <section class="wrap" style="padding-top:0">
+      <div class="card">
+        <h2>Gold price forecast for the next 24–72 hours</h2>
+        <p>The forecast page is the main English landing page for short-term gold price forecast queries. It combines the daily signal, key levels, macro context and a practical XAUUSD outlook in one place.</p>
+      </div>
+    </section>
+    """
     return seo_landing(
         request,
         path="/gold-price-forecast",
@@ -5136,6 +5195,7 @@ def page_gold_price_forecast(request: Request) -> HTMLResponse:
         mode="forecast_en",
         nav_active="gold_forecast",
         lang="en",
+        seo_text_html=seo_text_html,
         include_affiliate=True,
         include_trade_link=True,
     )
@@ -5143,6 +5203,14 @@ def page_gold_price_forecast(request: Request) -> HTMLResponse:
 
 @app.get("/gullpris-analyse", response_class=HTMLResponse)
 def page_gullpris_analyse(request: Request) -> HTMLResponse:
+    seo_text_html = """
+    <section class="wrap" style="padding-top:0">
+      <div class="card">
+        <h2>Daglig gullpris analyse</h2>
+        <p>Dette er hovedsiden for gullpris analyse på norsk. Den kombinerer dagsaktuell gullpris, teknisk signal, makrodrivere og relevant markedskontekst for brukere som vil ha en nøktern vurdering av gull akkurat nå.</p>
+      </div>
+    </section>
+    """
     return seo_landing(
         request,
         path="/gullpris-analyse",
@@ -5152,6 +5220,7 @@ def page_gullpris_analyse(request: Request) -> HTMLResponse:
         intro="Nøktern daglig analyse av gull. Fokus på trend, signal og makro. Gold price analysis og XAUUSD signal.",
         mode="analysis",
         nav_active="analysis",
+        seo_text_html=seo_text_html,
         include_affiliate=True,
         include_trade_link=True,
     )
@@ -5268,6 +5337,14 @@ def page_gold_price(request: Request) -> HTMLResponse:
 
 @app.get("/gold-price-analysis", response_class=HTMLResponse)
 def page_gold_price_analysis(request: Request) -> HTMLResponse:
+    seo_text_html = """
+    <section class="wrap" style="padding-top:0">
+      <div class="card">
+        <h2>Daily gold price analysis</h2>
+        <p>This page focuses on daily gold price analysis, technical structure, macro drivers and the short-term signal. It is built for users searching for a clear English read on gold price analysis rather than a generic market recap.</p>
+      </div>
+    </section>
+    """
     return seo_landing(
         request,
         path="/gold-price-analysis",
@@ -5278,6 +5355,7 @@ def page_gold_price_analysis(request: Request) -> HTMLResponse:
         mode="analysis_en",
         nav_active="gold_analysis",
         lang="en",
+        seo_text_html=seo_text_html,
         include_affiliate=True,
         include_trade_link=True,
     )
