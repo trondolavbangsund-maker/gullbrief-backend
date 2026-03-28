@@ -4234,26 +4234,18 @@ def save_news_articles(articles: List[Dict[str, Any]]) -> None:
     write_news_store({"articles": dedupe_articles(articles)})
 
 
-def append_news_archive(articles: List[Dict[str, Any]]) -> None:
+def write_news_archive(articles: List[Dict[str, Any]]) -> None:
     path = pathlib.Path(NEWS_ARCHIVE_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
+    merged = dedupe_articles(articles)
+    with path.open("w", encoding="utf-8") as f:
+        for article in merged:
+            f.write(json.dumps(article, ensure_ascii=False) + "\n")
 
-    existing_ids = set()
 
-    if path.exists():
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                try:
-                    obj = json.loads(line)
-                    existing_ids.add(str(obj.get("id") or ""))
-                except Exception:
-                    pass
-
-    with path.open("a", encoding="utf-8") as f:
-        for article in articles:
-            article_id = str(article.get("id") or "")
-            if article_id and article_id not in existing_ids:
-                f.write(json.dumps(article, ensure_ascii=False) + "\n")
+def append_news_archive(articles: List[Dict[str, Any]]) -> None:
+    merged = dedupe_articles(load_news_archive() + articles)
+    write_news_archive(merged)
 
 
 def get_news_article_by_slug(lang: str, slug: str) -> Optional[Dict[str, Any]]:
@@ -4502,7 +4494,7 @@ def build_daily_news_articles(force_date: Optional[str] = None) -> List[Dict[str
     day = force_date or utc_now().date().isoformat()
     snapshot = get_cached_brief(force_refresh=False)
     headlines = snapshot.get("headlines") or fetch_headlines(limit=FULL_HEADLINES_LIMIT)
-    published_at = iso_now()
+    published_at = f"{day}T12:00:00+00:00" if force_date else iso_now()
 
     out: List[Dict[str, Any]] = []
 
@@ -4556,18 +4548,30 @@ def build_daily_news_articles(force_date: Optional[str] = None) -> List[Dict[str
 def generate_and_store_daily_news(force_date: Optional[str] = None) -> Dict[str, Any]:
     day = force_date or utc_now().date().isoformat()
     existing = get_all_news_articles()
-
-    existing_same_day = [a for a in existing if str(a.get("date") or "") == day and str(a.get("lang") or "") in ("en", "no")]
-    if len(existing_same_day) >= 4:
-        return {"ok": True, "generated": 0, "articles": existing_same_day, "message": "ALREADY_GENERATED"}
-
     new_articles = build_daily_news_articles(force_date=day)
-    current_store_articles = get_news_articles()
-    merged = dedupe_articles(current_store_articles + new_articles)
-    save_news_articles(merged)
-    append_news_archive(new_articles)
 
-    return {"ok": True, "generated": len(new_articles), "articles": new_articles, "message": "GENERATED"}
+    expected_ids = {str(a.get("id") or "") for a in new_articles if str(a.get("id") or "")}
+    existing_ids_same_day = {
+        str(a.get("id") or "")
+        for a in existing
+        if str(a.get("date") or "") == day and str(a.get("lang") or "") in ("en", "no")
+    }
+
+    if expected_ids and expected_ids.issubset(existing_ids_same_day):
+        return {
+            "ok": True,
+            "generated": 0,
+            "articles": [a for a in existing if str(a.get("date") or "") == day],
+            "message": "ALREADY_GENERATED",
+        }
+
+    merged_all = dedupe_articles(existing + new_articles)
+    save_news_articles(merged_all)
+    write_news_archive(merged_all)
+
+    generated_count = len([a for a in new_articles if str(a.get("id") or "") not in existing_ids_same_day])
+
+    return {"ok": True, "generated": generated_count, "articles": new_articles, "message": "GENERATED"}
 
 
 def generate_news_range(days: int = 7, end_date: Optional[str] = None) -> Dict[str, Any]:
@@ -4580,24 +4584,32 @@ def generate_news_range(days: int = 7, end_date: Optional[str] = None) -> Dict[s
     else:
         end = utc_now().date()
 
-    generated_total = 0
+    existing = get_all_news_articles()
+    existing_ids = {str(a.get("id") or "") for a in existing if str(a.get("id") or "")}
     created_articles: List[Dict[str, Any]] = []
 
     for offset in range(days):
         day = (end - timedelta(days=offset)).isoformat()
         try:
-            result = generate_and_store_daily_news(force_date=day)
-            generated_total += int(result.get("generated") or 0)
-            created_articles.extend(result.get("articles") or [])
+            created_articles.extend(build_daily_news_articles(force_date=day))
         except Exception:
             continue
+
+    merged_all = dedupe_articles(existing + created_articles)
+    save_news_articles(merged_all)
+    write_news_archive(merged_all)
+
+    generated_total = len([
+        a for a in created_articles
+        if str(a.get("id") or "") and str(a.get("id") or "") not in existing_ids
+    ])
 
     return {
         "ok": True,
         "days": days,
         "end_date": end.isoformat(),
         "generated": generated_total,
-        "articles": created_articles,
+        "articles": dedupe_articles(created_articles),
     }
 
 
