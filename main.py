@@ -2386,8 +2386,10 @@ def jsonld_article(
 
 
 def jsonld_news_article(base: str, article: Dict[str, Any]) -> str:
+    article = normalize_article_for_display(article)
     lang = "en" if str(article.get("lang") or "") == "en" else "no"
     path = str(article.get("path") or "/")
+    image_path = str(article.get("image_path") or "")
     data = {
         "@context": "https://schema.org",
         "@type": "NewsArticle",
@@ -2404,6 +2406,8 @@ def jsonld_news_article(base: str, article: Dict[str, Any]) -> str:
             "logo": {"@type": "ImageObject", "url": absolute_url(base, NEWS_PUBLISHER_LOGO)},
         },
     }
+    if image_path:
+        data["image"] = [absolute_url(base, image_path)]
     return '<script type="application/ld+json">' + json.dumps(data, ensure_ascii=False) + "</script>"
 
 COMMON_STYLE = """
@@ -2628,6 +2632,8 @@ COMMON_STYLE = """
   .newslist h3{margin-top:0}
   .article-body p{margin:0 0 16px}
   .article-body h2{margin:26px 0 10px;font-size:22px;font-family:ui-serif,Georgia,Times}
+.article-hero-image{margin:18px 0 22px}
+  .article-hero-image img{display:block;width:100%;height:auto;border-radius:16px;border:1px solid rgba(255,255,255,.08);box-shadow:0 10px 28px rgba(0,0,0,.18)}
   .content-block{margin-top:16px}
   .content-block h2{
     margin:0 0 10px;
@@ -2773,8 +2779,9 @@ def footer_links(is_en: bool = False) -> str:
             <a href="/trade-gold">Trade gold</a>
             <a href="/premium-en">Premium</a>
             <a href="/archive-en">Archive</a>
-            <a href="/kontakt">Contact</a>
-            <a href="/terms">Terms</a>
+            <a href="/about-gullbrief">About Gullbrief</a>
+            <a href="/contact">Contact</a>
+            <a href="/terms-en">Terms</a>
             <a href="/privacy">Privacy</a>
           </div>
           <div style="margin-top:8px">© Gullbrief. Not investment advice.</div>
@@ -2793,6 +2800,7 @@ def footer_links(is_en: bool = False) -> str:
         <a href="/handle-gull">Handle gull</a>
         <a href="/premium">Premium</a>
         <a href="/archive">Arkiv</a>
+        <a href="/om-gullbrief">Om Gullbrief</a>
         <a href="/kontakt">Kontakt</a>
         <a href="/terms">Terms</a>
         <a href="/privacy">Privacy</a>
@@ -2965,6 +2973,56 @@ def improve_generated_title(lang: str, article_type: str, day: str, summary: str
     return f"Gullmarkedet i dag: oppdatering og nøkkelnivåer {day}"
 
 
+def article_image_path(article: Dict[str, Any]) -> str:
+    slug = slugify(str(article.get("slug") or article.get("id") or "article"))
+    return f"/article-image/{slug}.svg"
+
+
+def article_image_svg(title: str, subtitle: str, *, lang: str = "no") -> str:
+    safe_title = _escape_html(_clip_text(title, 90))
+    safe_subtitle = _escape_html(_clip_text(subtitle, 60))
+    date_text = _escape_html(datetime.now(timezone.utc).date().isoformat())
+    label = "GULLBRIEF"
+    title_size = 52 if len(title) < 36 else 40 if len(title) < 60 else 32
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-label="{safe_title}">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#09101c"/>
+      <stop offset="60%" stop-color="#10213b"/>
+      <stop offset="100%" stop-color="#0b1424"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0%" stop-color="#b68b1e"/>
+      <stop offset="55%" stop-color="#d8b24b"/>
+      <stop offset="100%" stop-color="#f0d27a"/>
+    </linearGradient>
+    <linearGradient id="grid" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0%" stop-color="#d4af37" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#d4af37" stop-opacity="0.03"/>
+    </linearGradient>
+    <filter id="glow"><feGaussianBlur stdDeviation="8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect width="1600" height="900" fill="url(#bg)"/>
+  <rect x="90" y="82" width="1420" height="1" fill="#d4af37" fill-opacity="0.55"/>
+  <text x="800" y="110" text-anchor="middle" fill="#e8c36a" font-size="44" font-family="Georgia,serif" letter-spacing="8">{label}</text>
+  <g opacity="0.18">
+    <path d="M90 735 L260 760 L430 710 L600 735 L770 665 L940 705 L1110 615 L1280 655 L1510 510" stroke="url(#gold)" stroke-width="8" fill="none" filter="url(#glow)"/>
+    <rect x="100" y="510" width="1320" height="210" fill="url(#grid)"/>
+    <g fill="#f0d27a" fill-opacity="0.22">
+      <rect x="320" y="540" width="16" height="110"/><rect x="390" y="500" width="16" height="150"/><rect x="460" y="470" width="16" height="180"/>
+      <rect x="530" y="525" width="16" height="125"/><rect x="600" y="565" width="16" height="85"/><rect x="670" y="515" width="16" height="135"/>
+      <rect x="740" y="560" width="16" height="90"/><rect x="810" y="520" width="16" height="130"/><rect x="880" y="485" width="16" height="165"/>
+      <rect x="950" y="535" width="16" height="115"/><rect x="1020" y="470" width="16" height="180"/><rect x="1090" y="505" width="16" height="145"/>
+      <rect x="1160" y="455" width="16" height="195"/><rect x="1230" y="485" width="16" height="165"/><rect x="1300" y="425" width="16" height="225"/>
+    </g>
+  </g>
+  <text x="120" y="260" fill="#f7f2eb" font-size="{title_size}" font-family="Georgia,serif" font-weight="700">{safe_title}</text>
+  <rect x="120" y="305" width="980" height="2" fill="#d4af37" fill-opacity="0.65"/>
+  <text x="120" y="380" fill="#e6c06a" font-size="34" font-family="Georgia,serif" font-style="italic">{safe_subtitle}</text>
+  <text x="120" y="820" fill="#f7f2eb" font-size="28" font-family="Arial,sans-serif">{date_text}</text>
+</svg>"""
+
+
 def normalize_article_for_display(article: Dict[str, Any]) -> Dict[str, Any]:
     a = dict(article)
     lang = str(a.get("lang") or "no")
@@ -2985,6 +3043,7 @@ def normalize_article_for_display(article: Dict[str, Any]) -> Dict[str, Any]:
         content = content.replace("Full analyse og signaloppdatering:", "Full analysis and signal update:")
 
     a["content"] = content
+    a["image_path"] = str(a.get("image_path") or article_image_path(a))
     return a
 
 
@@ -4798,6 +4857,9 @@ def render_news_article_page(request: Request, article: Dict[str, Any]) -> HTMLR
     path = str(article.get("path") or "/")
     published_at_raw = str(article.get("published_at") or iso_now())
     published_at_display = format_article_date(published_at_raw, lang=lang)
+    image_path = str(article.get("image_path") or article_image_path(article))
+    image_alt = _escape_html(title)
+    image_html = f'<div class="article-hero-image"><img src="{_escape_html(image_path)}" alt="{image_alt}" loading="eager" /></div>' if image_path else ""
     content_html = _article_content_to_html(str(article.get("content") or ""))
     recent_box = render_recent_articles_box(lang=lang, exclude_slug=str(article.get("slug") or ""))
     is_en = lang == "en"
@@ -4816,7 +4878,7 @@ def render_news_article_page(request: Request, article: Dict[str, Any]) -> HTMLR
       <section class="grid" style="grid-template-columns:1fr">
         <div class="card">
           <div class="title"><h2>{'Article' if lang == 'en' else 'Artikkel'}</h2><div class="muted">{_escape_html(published_at_display)}</div></div>
-          {content_html}
+          {image_html}{content_html}
         </div>
       </section>
 
@@ -5714,6 +5776,163 @@ def auth_logout(session_token: Optional[str] = Cookie(default=None, alias=SESSIO
     resp = RedirectResponse(url="/premium", status_code=303)
     resp.delete_cookie(SESSION_COOKIE_NAME, path="/")
     return resp
+
+
+@app.get("/article-image/{slug}.svg")
+def article_image_svg_route(slug: str) -> Response:
+    article = None
+    slug_s = slug.strip().lower()
+    for item in get_all_news_articles():
+        if slugify(str(item.get("slug") or item.get("id") or "")) == slug_s:
+            article = normalize_article_for_display(item)
+            break
+    if article is None:
+        article = {"title": "Gullbrief article", "summary": "Daily market update", "lang": "en"}
+    title = str(article.get("title") or "Gullbrief article")
+    summary = str(article.get("summary") or ("Daily market update" if str(article.get("lang") or "en") == "en" else "Daglig markedsoppdatering"))
+    lang = "en" if str(article.get("lang") or "") == "en" else "no"
+    svg = article_image_svg(title, summary, lang=lang)
+    return Response(content=svg, media_type="image/svg+xml")
+
+
+@app.get("/om-gullbrief", response_class=HTMLResponse)
+def about_gullbrief_no(request: Request) -> HTMLResponse:
+    content = f"""
+    <h2>Om Gullbrief</h2>
+    <p>Gullbrief er en nisjeside for deg som vil følge gullpris, XAUUSD, markedssignal og makrodrivere uten unødvendig støy. Målet er å gjøre gullmarkedet enklere å følge gjennom korte, oppdaterte analyser på norsk og engelsk.</p>
+
+    <h3>Hva du finner på Gullbrief</h3>
+    <ul>
+      <li>Daglig gullpris i USD</li>
+      <li>Korte markedsoppdateringer og nyhetssaker</li>
+      <li>Tekniske signaler og nivåer</li>
+      <li>Prognoser og scenarioer for de neste 24–72 timene</li>
+      <li>Premium-innhold med utvidet rapport og arkiv</li>
+    </ul>
+
+    <h3>Hvordan analysene lages</h3>
+    <p>{_escape_html(APP_NAME)} kombinerer prisdata, tekniske indikatorer, utvalgte nyhetskilder og automatisert analyse for å publisere daglige markedsoppdateringer om gull. Innholdet er data-drevet og AI-støttet, men publiseres som markedskommentar og informasjon — ikke som personlig investeringsrådgivning.</p>
+
+    <h3>Viktig å vite</h3>
+    <p>Analyser, signaler og prognoser er basert på tilgjengelige data på publiseringstidspunktet og kan endre seg raskt når markedsforholdene skifter. Historisk utvikling gir ingen garanti for fremtidige resultater.</p>
+
+    <p style="margin-top:18px"><a href="/kontakt">Kontakt</a> · <a href="/terms">Terms</a></p>
+    """
+    return legal_page(request, path="/om-gullbrief", title="Om Gullbrief", intro="Hva Gullbrief er, hva siden dekker og hvordan analysene lages.", content_html=content)
+
+
+@app.get("/about-gullbrief", response_class=HTMLResponse)
+def about_gullbrief_en(request: Request) -> HTMLResponse:
+    content = f"""
+    <h2>About Gullbrief</h2>
+    <p>Gullbrief is a niche site for readers who want to follow the gold price, XAUUSD, market signals and macro drivers without unnecessary noise. The goal is to make the gold market easier to follow through short, updated analysis in Norwegian and English.</p>
+
+    <h3>What you will find on Gullbrief</h3>
+    <ul>
+      <li>Daily gold price in USD</li>
+      <li>Short market updates and news articles</li>
+      <li>Technical signals and key levels</li>
+      <li>Forecasts and scenarios for the next 24–72 hours</li>
+      <li>Premium content with extended reports and archive access</li>
+    </ul>
+
+    <h3>How the analysis is produced</h3>
+    <p>{_escape_html(APP_NAME)} combines price data, technical indicators, selected news sources and automated analysis to publish daily market updates about gold. The content is data-driven and AI-supported, but it is published as market commentary and information — not as personal investment advice.</p>
+
+    <h3>Important to know</h3>
+    <p>Analysis, signals and forecasts are based on data available at the time of publication and can change quickly when market conditions shift. Past performance is not a guarantee of future results.</p>
+
+    <p style="margin-top:18px"><a href="/contact">Contact</a> · <a href="/terms-en">Terms</a></p>
+    """
+    body = _replace_many(
+        LEGAL_PAGE_TEMPLATE,
+        {
+            "__APP_NAME__": _escape_html(APP_NAME),
+            "__SITE_HEADER__": site_header("premium_en"),
+            "__TITLE__": "About Gullbrief",
+            "__INTRO__": "What Gullbrief is, what the site covers and how the analysis is produced.",
+            "__CONTENT__": content,
+            "__KEY_BOX__": key_fallback_box(is_en=True),
+            "__FOOTER__": footer_links(is_en=True),
+        },
+    )
+    return HTMLResponse(html_shell(request, title="About Gullbrief", description="About Gullbrief and how the analysis is produced.", path="/about-gullbrief", body_html=body, lang="en"))
+
+
+@app.get("/contact", response_class=HTMLResponse)
+def contact_page(request: Request) -> HTMLResponse:
+    content = f"""
+    <h2>Contact</h2>
+    <p>If you have questions about Premium, payments, access, partnerships or technical issues, you can contact us by email.</p>
+
+    <h3>Email</h3>
+    <p><a href="mailto:{_escape_html(CONTACT_EMAIL)}">{_escape_html(CONTACT_EMAIL)}</a></p>
+
+    <h3>About the service</h3>
+    <p>{_escape_html(APP_NAME)} publishes daily market commentary on the gold price, XAUUSD, signals and related news drivers.</p>
+
+    <h3>Important</h3>
+    <p>The content is provided for information and market commentary only. It is not investment advice, personal financial advice or a solicitation to buy or sell financial instruments.</p>
+    """
+    body = _replace_many(
+        LEGAL_PAGE_TEMPLATE,
+        {
+            "__APP_NAME__": _escape_html(APP_NAME),
+            "__SITE_HEADER__": site_header("premium_en"),
+            "__TITLE__": "Contact",
+            "__INTRO__": "Contact information for questions about Gullbrief, Premium and access.",
+            "__CONTENT__": content,
+            "__KEY_BOX__": key_fallback_box(is_en=True),
+            "__FOOTER__": footer_links(is_en=True),
+        },
+    )
+    return HTMLResponse(html_shell(request, title="Contact", description="Contact information for Gullbrief.", path="/contact", body_html=body, lang="en"))
+
+
+@app.get("/terms-en", response_class=HTMLResponse)
+def terms_en_page(request: Request) -> HTMLResponse:
+    org_line = f"<p><b>Provider:</b> {_escape_html(LEGAL_COMPANY_NAME)}</p>"
+    if LEGAL_ORGNO:
+        org_line += f"<p><b>Registration number:</b> {_escape_html(LEGAL_ORGNO)}</p>"
+    if LEGAL_ADDRESS:
+        org_line += f"<p><b>Address:</b> {_escape_html(LEGAL_ADDRESS)}</p>"
+
+    content = f"""
+    <h2>Terms</h2>
+    {org_line}
+    <p><b>Contact:</b> <a href="mailto:{_escape_html(CONTACT_EMAIL)}">{_escape_html(CONTACT_EMAIL)}</a></p>
+
+    <h3>1. About the service</h3>
+    <p>{_escape_html(APP_NAME)} provides information, market commentary, signals and analysis related to the gold price and XAUUSD. The service is provided as is, and content may change without notice.</p>
+
+    <h3>2. Not investment advice</h3>
+    <p>All content is intended as general information only. It does not constitute investment advice, financial advice or a personal recommendation. You are solely responsible for your own decisions.</p>
+
+    <h3>3. Premium and payments</h3>
+    <p>Premium provides access to extended content such as archive material, signal history, more news and longer reports. Payments are handled through Stripe. If activation issues occur, please contact us.</p>
+
+    <h3>4. Access</h3>
+    <p>Premium access is personal and must not be shared. Misuse, automated extraction or attempts to bypass access controls may result in access being terminated.</p>
+
+    <h3>5. Limitation of liability</h3>
+    <p>We aim to keep information updated, but do not guarantee completeness, accuracy or availability at all times. We are not liable for direct or indirect losses resulting from use of the service.</p>
+
+    <h3>6. Changes</h3>
+    <p>These terms may be updated. The version published on the website at any given time applies.</p>
+    """
+    body = _replace_many(
+        LEGAL_PAGE_TEMPLATE,
+        {
+            "__APP_NAME__": _escape_html(APP_NAME),
+            "__SITE_HEADER__": site_header("premium_en"),
+            "__TITLE__": "Terms",
+            "__INTRO__": "Terms for using Gullbrief and Premium.",
+            "__CONTENT__": content,
+            "__KEY_BOX__": key_fallback_box(is_en=True),
+            "__FOOTER__": footer_links(is_en=True),
+        },
+    )
+    return HTMLResponse(html_shell(request, title="Terms", description="Terms for using Gullbrief.", path="/terms-en", body_html=body, lang="en"))
 
 
 @app.get("/kontakt", response_class=HTMLResponse)
