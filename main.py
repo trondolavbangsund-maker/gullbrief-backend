@@ -21,6 +21,12 @@ from urllib.parse import quote, urlparse
 
 import requests
 import stripe  # type: ignore
+try:
+    import psycopg2  # type: ignore
+    import psycopg2.extras  # type: ignore
+    HAS_PSYCOPG2 = True
+except ImportError:
+    HAS_PSYCOPG2 = False
 from fastapi import Cookie, FastAPI, Form, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
@@ -41,7 +47,7 @@ from fastapi.staticfiles import StaticFiles
 # =============================================================================
 
 APP_NAME = os.getenv("APP_NAME", "Gullbrief").strip()
-APP_VERSION = "4.5"
+APP_VERSION = "4.7"
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip()
@@ -64,6 +70,8 @@ DB_PATH = os.getenv("DB_PATH", "data/app.db").strip()
 PUBLIC_SNAPSHOT_PATH = os.getenv("PUBLIC_SNAPSHOT_PATH", "data/public_snapshot.json").strip()
 NEWS_PATH = os.getenv("NEWS_PATH", "data/news.json").strip()
 NEWS_ARCHIVE_PATH = os.getenv("NEWS_ARCHIVE_PATH", "data/news_archive.jsonl").strip()
+
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 ADMIN_API_KEY = os.getenv("PREMIUM_API_KEY", "gullbrief-dev").strip()
 BASE_URL = os.getenv("BASE_URL", "").strip().rstrip("/")
@@ -243,6 +251,252 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# =============================================================================
+# PostgreSQL / Supabase helpers
+# =============================================================================
+
+def _pg_conn():
+    """Get a PostgreSQL connection if DATABASE_URL is set."""
+    if not DATABASE_URL or not HAS_PSYCOPG2:
+        return None
+    try:
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+        return conn
+    except Exception:
+        return None
+
+
+def _pg_available() -> bool:
+    """Check if PostgreSQL is configured and available."""
+    conn = _pg_conn()
+    if conn:
+        conn.close()
+        return True
+    return False
+
+
+def pg_save_snapshot(data: dict) -> bool:
+    """Save snapshot to Supabase snapshots table."""
+    conn = _pg_conn()
+    if not conn:
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO snapshots (data, created_at) VALUES (%s, %s)",
+                (json.dumps(data, ensure_ascii=False), datetime.now(timezone.utc))
+            )
+        conn.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def pg_get_latest_snapshot() -> Optional[dict]:
+    """Get latest snapshot from Supabase."""
+    conn = _pg_conn()
+    if not conn:
+        return None
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT data FROM snapshots ORDER BY created_at DESC LIMIT 1")
+            row = cur.fetchone()
+            if row:
+                d = row["data"]
+                return d if isinstance(d, dict) else json.loads(d)
+        return None
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
+def pg_get_snapshots(limit: int = 500) -> List[dict]:
+    """Get snapshots from Supabase, newest first."""
+    conn = _pg_conn()
+    if not conn:
+        return []
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT data FROM snapshots ORDER BY created_at DESC LIMIT %s", (limit,))
+            rows = cur.fetchall()
+            out = []
+            for row in rows:
+                d = row["data"]
+                if isinstance(d, dict):
+                    out.append(d)
+                else:
+                    try:
+                        out.append(json.loads(d))
+                    except Exception:
+                        pass
+            return out
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def pg_save_news_article(article: dict) -> bool:
+    """Save a news article to Supabase."""
+    conn = _pg_conn()
+    if not conn:
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO news_articles
+                    (slug, lang, title, summary, body, source, path, published_at, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (slug) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    summary = EXCLUDED.summary,
+                    body = EXCLUDED.body,
+                    path = EXCLUDED.path,
+                    published_at = EXCLUDED.published_at
+                """,
+                (
+                    str(article.get("slug") or ""),
+                    str(article.get("lang") or "no"),
+                    str(article.get("title") or ""),
+                    str(article.get("summary") or ""),
+                    str(article.get("content") or ""),
+                    str(article.get("source") or ""),
+                    str(article.get("path") or ""),
+                    str(article.get("published_at") or iso_now()),
+                    datetime.now(timezone.utc),
+                )
+            )
+        conn.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def pg_get_news_articles(lang: Optional[str] = None, limit: int = 200) -> List[dict]:
+    """Get news articles from Supabase."""
+    conn = _pg_conn()
+    if not conn:
+        return []
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if lang:
+                cur.execute(
+                    "SELECT * FROM news_articles WHERE lang=%s ORDER BY published_at DESC LIMIT %s",
+                    (lang, limit)
+                )
+            else:
+                cur.execute(
+                    "SELECT * FROM news_articles ORDER BY published_at DESC LIMIT %s",
+                    (limit,)
+                )
+            rows = cur.fetchall()
+            out = []
+            for row in rows:
+                d = dict(row)
+                # Map body -> content for compatibility
+                d["content"] = d.pop("body", "") or ""
+                out.append(d)
+            return out
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def pg_get_news_article_by_slug(slug: str) -> Optional[dict]:
+    """Get a single news article by slug from Supabase."""
+    conn = _pg_conn()
+    if not conn:
+        return None
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM news_articles WHERE slug=%s LIMIT 1", (slug,))
+            row = cur.fetchone()
+            if row:
+                d = dict(row)
+                d["content"] = d.pop("body", "") or ""
+                return d
+        return None
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
+def pg_cleanup_old_history(keep_days: int = 90) -> int:
+    """Delete price history older than keep_days from Supabase to stay within free tier."""
+    conn = _pg_conn()
+    if not conn:
+        return 0
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM price_history WHERE updated_at < %s", (cutoff,))
+            deleted = cur.rowcount
+        conn.commit()
+        return deleted
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+def pg_save_price_history(data: dict) -> bool:
+    """Save price history row to Supabase."""
+    conn = _pg_conn()
+    if not conn:
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO price_history (data, updated_at) VALUES (%s, %s)",
+                (json.dumps(data, ensure_ascii=False), datetime.now(timezone.utc))
+            )
+        conn.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def pg_get_price_history(limit: int = 500) -> List[dict]:
+    """Get price history from Supabase, oldest first."""
+    conn = _pg_conn()
+    if not conn:
+        return []
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT data FROM price_history ORDER BY updated_at ASC LIMIT %s",
+                (limit,)
+            )
+            rows = cur.fetchall()
+            out = []
+            for row in rows:
+                d = row["data"]
+                if isinstance(d, dict):
+                    out.append(d)
+                else:
+                    try:
+                        out.append(json.loads(d))
+                    except Exception:
+                        pass
+            return out
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+
+
 def safe_float(x: Any) -> Optional[float]:
     try:
         if x is None:
@@ -388,6 +642,11 @@ def write_json_file_atomic(path_str: str, data: Dict[str, Any]) -> None:
 
 
 def read_public_snapshot() -> Optional[Dict[str, Any]]:
+    # Try PostgreSQL first
+    pg = pg_get_latest_snapshot()
+    if pg and isinstance(pg, dict):
+        return pg
+    # Fallback to file
     data = read_json_file(PUBLIC_SNAPSHOT_PATH)
     if not isinstance(data, dict):
         return None
@@ -397,10 +656,25 @@ def read_public_snapshot() -> Optional[Dict[str, Any]]:
 def write_public_snapshot(data: Dict[str, Any]) -> None:
     payload = dict(data)
     payload["snapshot_saved_at"] = iso_now()
-    write_json_file_atomic(PUBLIC_SNAPSHOT_PATH, payload)
+    # Save to PostgreSQL
+    try:
+        pg_save_snapshot(payload)
+    except Exception:
+        pass
+    # Also save to file as fallback
+    try:
+        write_json_file_atomic(PUBLIC_SNAPSHOT_PATH, payload)
+    except Exception:
+        pass
 
 
 def read_news_store() -> Dict[str, Any]:
+    # Try PostgreSQL first
+    if DATABASE_URL and HAS_PSYCOPG2:
+        articles = pg_get_news_articles()
+        if articles:
+            return {"version": APP_VERSION, "updated_at": iso_now(), "articles": articles}
+    # Fallback to file
     data = read_json_file(NEWS_PATH)
     if not isinstance(data, dict):
         return {"version": APP_VERSION, "updated_at": iso_now(), "articles": []}
@@ -415,7 +689,18 @@ def write_news_store(data: Dict[str, Any]) -> None:
     payload["updated_at"] = iso_now()
     if not isinstance(payload.get("articles"), list):
         payload["articles"] = []
-    write_json_file_atomic(NEWS_PATH, payload)
+    # Save to PostgreSQL
+    if DATABASE_URL and HAS_PSYCOPG2:
+        for article in payload["articles"]:
+            try:
+                pg_save_news_article(article)
+            except Exception:
+                pass
+    # Also save to file as fallback
+    try:
+        write_json_file_atomic(NEWS_PATH, payload)
+    except Exception:
+        pass
 
 
 def ensure_news_store_seeded_from_archive() -> None:
@@ -826,10 +1111,24 @@ def _read_jsonl_objects(path_str: str) -> List[Dict[str, Any]]:
 
 
 def load_news_archive() -> List[Dict[str, Any]]:
+    # Try PostgreSQL first
+    if DATABASE_URL and HAS_PSYCOPG2:
+        articles = pg_get_news_articles()
+        if articles:
+            return articles
     return _read_jsonl_objects(NEWS_ARCHIVE_PATH)
 
 
 def _read_last_snapshot() -> Optional[Dict[str, Any]]:
+    # Try PostgreSQL first
+    if DATABASE_URL and HAS_PSYCOPG2:
+        rows = pg_get_price_history(limit=1)
+        if rows:
+            return rows[-1]
+        snap = pg_get_latest_snapshot()
+        if snap:
+            return snap
+    # Fallback to file
     p = _ensure_history_dir()
     if not p.exists():
         return None
@@ -907,28 +1206,43 @@ def store_snapshot_if_needed(data: Dict[str, Any]) -> bool:
         "headlines": data.get("headlines", []),
     }
 
-    with p.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    # Save to PostgreSQL
+    try:
+        pg_save_price_history(rec)
+    except Exception:
+        pass
+    # Also save to file as fallback
+    try:
+        with p.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
     return True
 
 
 def read_history(limit: int = 500) -> List[Dict[str, Any]]:
+    # Try PostgreSQL first
+    if DATABASE_URL and HAS_PSYCOPG2:
+        rows = pg_get_price_history(limit=limit)
+        if rows:
+            return rows
+    # Fallback to file
     p = _ensure_history_dir()
     if not p.exists():
         return []
 
-    rows: List[Dict[str, Any]] = []
+    rows_file: List[Dict[str, Any]] = []
     with p.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
-                rows.append(json.loads(line))
+                rows_file.append(json.loads(line))
             except Exception:
                 continue
 
-    return rows[-limit:]
+    return rows_file[-limit:]
 
 
 def ensure_snapshot_persisted_from_public() -> None:
@@ -4333,6 +4647,14 @@ def get_news_articles() -> List[Dict[str, Any]]:
 
 
 def get_all_news_articles() -> List[Dict[str, Any]]:
+    # If PostgreSQL is available, use a single query to avoid double calls
+    if DATABASE_URL and HAS_PSYCOPG2:
+        articles = pg_get_news_articles()
+        if articles:
+            merged = dedupe_articles(articles)
+            merged.sort(key=lambda x: str(x.get("published_at") or ""), reverse=True)
+            return merged
+    # Fallback: merge file-based current + archive
     current = get_news_articles()
     archived = load_news_archive()
     merged = dedupe_articles(current + archived)
@@ -4345,25 +4667,36 @@ def save_news_articles(articles: List[Dict[str, Any]]) -> None:
 
 
 def append_news_archive(articles: List[Dict[str, Any]]) -> None:
-    path = pathlib.Path(NEWS_ARCHIVE_PATH)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    existing_ids = set()
-
-    if path.exists():
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                try:
-                    obj = json.loads(line)
-                    existing_ids.add(str(obj.get("id") or ""))
-                except Exception:
-                    pass
-
-    with path.open("a", encoding="utf-8") as f:
+    # Save to PostgreSQL
+    if DATABASE_URL and HAS_PSYCOPG2:
         for article in articles:
-            article_id = str(article.get("id") or "")
-            if article_id and article_id not in existing_ids:
-                f.write(json.dumps(article, ensure_ascii=False) + "\n")
+            try:
+                pg_save_news_article(article)
+            except Exception:
+                pass
+
+    # Also save to file as fallback
+    try:
+        path = pathlib.Path(NEWS_ARCHIVE_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        existing_ids = set()
+        if path.exists():
+            with path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        obj = json.loads(line)
+                        existing_ids.add(str(obj.get("id") or ""))
+                    except Exception:
+                        pass
+
+        with path.open("a", encoding="utf-8") as f:
+            for article in articles:
+                article_id = str(article.get("id") or "")
+                if article_id and article_id not in existing_ids:
+                    f.write(json.dumps(article, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 def get_news_article_by_slug(lang: str, slug: str) -> Optional[Dict[str, Any]]:
@@ -5169,7 +5502,7 @@ def archive_day_page(request: Request, day: str) -> HTMLResponse:
 @app.get("/success", response_class=HTMLResponse)
 def success_page(request: Request, session_id: Optional[str] = None) -> HTMLResponse:
     key = "Nøkkel opprettes..."
-    status_text = "Vent noen sekunder og oppdater siden hvis nøkkelen ikke vises med en gang."
+    status_text = "Nøkkelen din er klar! Lagre den på et trygt sted. Du kan også logge inn med magic link (uten passord) fra premium-siden – mye enklere!"
     email = ""
 
     if session_id and stripe_ready():
@@ -6154,6 +6487,17 @@ def api_rebuild_last_week(x_api_key: Optional[str] = Header(default=None)):
         return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
 
 
+@app.post("/api/tasks/cleanup-history")
+def api_cleanup_history(keep_days: int = 90, x_api_key: Optional[str] = Header(default=None)):
+    if x_api_key != ADMIN_API_KEY:
+        return JSONResponse({"message": "UNAUTHORIZED"}, status_code=401)
+    try:
+        deleted = pg_cleanup_old_history(keep_days=keep_days)
+        return JSONResponse({"ok": True, "deleted": deleted, "keep_days": keep_days})
+    except Exception as e:
+        return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
+
+
 # =============================================================================
 # Public API
 # =============================================================================
@@ -6253,7 +6597,7 @@ def api_send_premium_daily(
     request: Request,
     x_api_key: Optional[str] = Header(default=None),
 ):
-    if x_api_key != "gb_test_12345":
+    if x_api_key != ADMIN_API_KEY:
         return JSONResponse({"message": "UNAUTHORIZED"}, status_code=401)
 
     today = datetime.now(timezone.utc).date().isoformat()
@@ -6484,6 +6828,29 @@ async def api_stripe_webhook(request: Request):
             )
             if customer_id or subscription_id or email:
                 sync_premium_from_stripe(email=email, customer_id=customer_id, subscription_id=subscription_id, status="active")
+                # Send welcome email
+                if email and brevo_configured():
+                    try:
+                        api_key_val = get_active_api_key_for_email(email) or "(hentes i arkiv etter innlogging)"
+                        welcome_subject = f"{APP_NAME} Premium – velkommen!"
+                        welcome_body = (
+                            f"Hei!\n\n"
+                            f"Takk for at du kjøpte {APP_NAME} Premium!\n\n"
+                            f"Din premium-nøkkel: {api_key_val}\n\n"
+                            f"Du kan også logge inn med magic link (uten passord) direkte fra premium-siden:\n"
+                            f"{BASE_URL or 'https://gullbrief.no'}/premium\n\n"
+                            f"Med premium får du:\n"
+                            f"- Daglig premium-rapport\n"
+                            f"- Signalhistorikk og treffsikkerhet\n"
+                            f"- Arkiv med 7d/30d etter signal\n"
+                            f"- Flere markedsnyheter\n"
+                            f"- E-postvarsler\n\n"
+                            f"Hilsen\n"
+                            f"{APP_NAME}"
+                        )
+                        send_email(email, welcome_subject, welcome_body)
+                    except Exception:
+                        pass
 
         elif event_type in ("customer.subscription.created", "customer.subscription.updated"):
             customer_id = str(data_obj.get("customer") or "")
@@ -6571,6 +6938,8 @@ def health():
             "etoro_no_configured": bool(ETORO_AFFILIATE_NO),
             "etoro_en_configured": bool(ETORO_AFFILIATE_EN),
             "english_surface_enabled": True,
+            "database_url_configured": bool(DATABASE_URL),
+            "postgresql_available": _pg_available(),
             "version": APP_VERSION,
         }
     )
@@ -6650,19 +7019,37 @@ def sitemap_xml(request: Request):
         "/privacy",
     ]
 
-    news_urls = [str(a.get("path") or "") for a in get_all_news_articles() if str(a.get("path") or "")]
+    today = utc_now().date().isoformat()
+    news_articles = get_all_news_articles()
+    news_url_map = {
+        str(a.get("path") or ""): str(a.get("published_at") or a.get("updated_at") or today)[:10]
+        for a in news_articles if str(a.get("path") or "")
+    }
 
     parts = ['<?xml version="1.0" encoding="UTF-8"?>']
     parts.append('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">')
 
-    for p in static_urls + news_urls:
+    weekly_paths = {"/premium", "/premium-en", "/archive", "/archive-en", "/terms", "/privacy", "/kontakt"}
+    for p in static_urls:
         if not p:
             continue
-        changefreq = "daily" if p not in ("/premium", "/premium-en", "/archive", "/archive-en", "/terms", "/privacy", "/kontakt") else "weekly"
+        changefreq = "weekly" if p in weekly_paths else "daily"
         parts.append(
             "<url>"
             f"<loc>{_escape_html(base + p)}</loc>"
+            f"<lastmod>{today}</lastmod>"
             f"<changefreq>{changefreq}</changefreq>"
+            "</url>"
+        )
+
+    for p, lastmod in news_url_map.items():
+        if not p:
+            continue
+        parts.append(
+            "<url>"
+            f"<loc>{_escape_html(base + p)}</loc>"
+            f"<lastmod>{_escape_html(lastmod)}</lastmod>"
+            "<changefreq>monthly</changefreq>"
             "</url>"
         )
 
